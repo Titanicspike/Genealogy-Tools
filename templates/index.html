@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jiapu Source Manager</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- HTMX -->
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700&display=swap');
+        body {
+            font-family: 'Inter', 'Noto Sans TC', sans-serif;
+            background-color: #f8fafc;
+        }
+    </style>
+</head>
+<body class="text-slate-800 antialiased h-screen flex flex-col">
+
+    <!-- Header -->
+    <header class="bg-indigo-600 text-white shadow-md">
+        <div class="container mx-auto px-6 py-4 flex justify-between items-center">
+            <h1 class="text-2xl font-bold tracking-tight">Jiapu Source Manager</h1>
+            <div class="text-indigo-200 text-sm">Organize & Search Genealogy Books</div>
+        </div>
+    </header>
+
+    <main class="container mx-auto px-6 py-8 flex-grow flex flex-col md:flex-row gap-8">
+        
+        <!-- Left Column: Add Source & List -->
+        <div class="w-full md:w-1/2 flex flex-col gap-6">
+            
+            <!-- Add Source Card -->
+            <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+                <h2 class="text-lg font-semibold mb-4 text-slate-700">Add New Jiapu Source</h2>
+                <form hx-post="/add-source" hx-target="#source-list" hx-swap="innerHTML" hx-on::after-request="this.reset()" class="flex flex-col gap-3">
+                    <label for="url" class="text-sm font-medium text-slate-600">Source Link (FamilySearch, MyChinaRoots, ZtZupu)</label>
+                    <div class="flex gap-2">
+                        <input type="url" id="url" name="url" placeholder="https://..." required class="flex-grow px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all">
+                        <button type="submit" class="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2 rounded-lg font-medium transition-colors shadow-sm">
+                            Add
+                        </button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Source List Card -->
+            <div class="bg-white rounded-xl shadow-sm border border-slate-200 flex-grow flex flex-col overflow-hidden">
+                <div class="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                    <h2 class="text-lg font-semibold text-slate-700">Your Sources</h2>
+                    <span class="text-xs font-medium px-2.5 py-1 bg-indigo-100 text-indigo-700 rounded-full">Auto-updating</span>
+                </div>
+                <div class="p-0 overflow-y-auto max-h-[500px]">
+                    <ul id="source-list" hx-get="/sources" hx-trigger="load, every 5s" class="divide-y divide-slate-100">
+                        <!-- Sources injected here via HTMX -->
+                        <div class="p-8 text-center text-slate-400 text-sm">Loading sources...</div>
+                    </ul>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- Right Column: Search -->
+        <div class="w-full md:w-1/2 flex flex-col gap-6">
+            
+            <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6 flex flex-col h-full">
+                <h2 class="text-lg font-semibold mb-4 text-slate-700">Fuzzy Search OCR Text</h2>
+                <p class="text-sm text-slate-500 mb-4">Search characters. Automatically matches Simplified & Traditional variants.</p>
+                
+                <input class="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all mb-6 text-lg shadow-sm"
+                       type="search" 
+                       name="query" 
+                       placeholder="Search characters (e.g. 張三)..." 
+                       hx-get="/search" 
+                       hx-trigger="input changed delay:500ms, search" 
+                       hx-target="#search-results" 
+                       hx-indicator=".htmx-indicator">
+                
+                <div class="flex-grow overflow-y-auto">
+                    <div class="htmx-indicator flex justify-center py-4">
+                        <svg class="animate-spin h-6 w-6 text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                    </div>
+                    <div id="search-results" class="flex flex-col gap-4">
+                        <!-- Results injected here -->
+                        <div class="text-center text-slate-400 py-12 text-sm">
+                            Enter a query to start searching.
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+    </main>
+
+</body>
+</html>

@@ -1,0 +1,37 @@
+{% if sources %}
+    {% for source in sources %}
+    <li class="px-6 py-4 hover:bg-slate-50 transition-colors">
+        <div class="flex justify-between items-start">
+            <div class="flex flex-col overflow-hidden mr-4">
+                <span class="text-sm font-semibold text-slate-800 truncate" title="{{ source.url }}">{{ source.url }}</span>
+                <div class="flex items-center gap-2 mt-1">
+                    <span class="text-xs text-slate-500">{{ source.category }}</span>
+                    <span class="text-slate-300">•</span>
+                    <span class="text-xs text-slate-400">{{ source.created_at[:16] }}</span>
+                </div>
+            </div>
+            
+            {% if source.status == 'Completed' %}
+            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800 whitespace-nowrap">
+                <svg class="-ml-0.5 mr-1.5 h-2 w-2 text-green-400" fill="currentColor" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" /></svg>
+                Completed
+            </span>
+            {% elif source.status == 'Failed' %}
+            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800 whitespace-nowrap">
+                <svg class="-ml-0.5 mr-1.5 h-2 w-2 text-red-400" fill="currentColor" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" /></svg>
+                Failed
+            </span>
+            {% else %}
+            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800 whitespace-nowrap">
+                <svg class="animate-pulse -ml-0.5 mr-1.5 h-2 w-2 text-amber-500" fill="currentColor" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" /></svg>
+                {{ source.status }}
+            </span>
+            {% endif %}
+        </div>
+    </li>
+    {% endfor %}
+{% else %}
+    <div class="p-8 text-center text-slate-400 text-sm">
+        No sources added yet. Add a link above to get started.
+    </div>
+{% endif %}
