@@ -1,6 +1,6 @@
 # Genealogy Tools
 
-This document outlines the architecture and data flow of the Genealogy Tools application. It serves as a guide for future development and AI sessions.
+This document outlines the architecture and data flow of the Genealogy Tools application. It serves as a guide for future development.
 
 ## Architecture Overview
 
