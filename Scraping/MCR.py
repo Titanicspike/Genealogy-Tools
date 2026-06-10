@@ -40,7 +40,7 @@ async def mainAsync(ids, pathName):
             print(f"Finished scraping {folder_name}")
             return fullSavePath
 
-def main(ids, pathName = r"C:\Users\njwye\Documents\py\Genealogy Tools\CamoufoxScraping\MCR"):
+def main(ids, pathName = r"C:\Users\njwye\Documents\py\Genealogy Tools\Scraping\MCR"):
     asyncio.run(mainAsync(ids, pathName))
 
 if __name__ == '__main__':

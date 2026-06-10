@@ -22,7 +22,7 @@ async def imageManager():
     async with aiohttp.ClientSession(connector=connector) as session:
         await asyncio.gather(*[getImage(session, url, n) for n, url in enumerate(imageUrls)])
 
-def main(zupuIds, savePath = r"C:\Users\njwye\Documents\py\Genealogy Tools\CamoufoxScraping\ztzupu"):
+def main(zupuIds, savePath = r"C:\Users\njwye\Documents\py\Genealogy Tools\Scraping\ztzupu"):
     for zupuId in zupuIds:
         url = f'http://www.ztzupu.com/ztzupu/zpzoom/id/{zupuId}.html' 
         mainPage = BeautifulSoup(requests.get(url).text, 'html.parser')

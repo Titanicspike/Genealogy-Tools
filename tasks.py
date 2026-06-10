@@ -26,6 +26,7 @@ def extract_text_with_paddle(image_path: str) -> str:
         
         if response.status_code == 200:
             data = response.json()
+            print(data)
             # The result usually contains 'doc_content' (the text/markdown)
             return data.get('result').get("layoutParsingResults")[0].get("markdown").get("text", "")
         else:

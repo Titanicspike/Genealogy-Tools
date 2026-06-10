@@ -5,7 +5,7 @@ from Scraping.FolderNameSerializer import SerializeFolderName
 
 
 print("starting")
-def main(ids, savePath = r"C:\Users\njwye\Documents\py\Genealogy Tools\CamoufoxScraping\FamilySearch"):
+def main(ids, savePath = r"C:\Users\njwye\Documents\py\Genealogy Tools\Scraping\FamilySearch"):
     username = "Titanicspike"
     password = "6Wjb$9-&r4h&ZaY"
     print("Does the function start?")
