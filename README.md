@@ -34,3 +34,7 @@ The background task (`process_jiapu_source`) orchestrates the pipeline and updat
 The foundational architecture is solid, utilizing a responsive frontend setup with partials, asynchronous database operations, and proper background task delegation. 
 
 The primary next step for this codebase is replacing the `perform_ocr_placeholder` in `tasks.py` with actual OCR integration (e.g., passing the images scraped by the Camoufox scripts into an OCR engine like Tesseract or EasyOCR) to populate the database with real text.
+
+
+### How To Run
+`python -m uvicorn main:app --reload`
