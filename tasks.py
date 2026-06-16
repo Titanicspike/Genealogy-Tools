@@ -4,6 +4,7 @@ import sys
 import traceback
 import requests
 import base64
+import re
 print(os.path.join(os.path.dirname(__file__), 'CamoufoxScraping'))
 # Add CamoufoxScraping to the path so we can import the scrapers
 sys.path.append(os.path.join(os.path.dirname(__file__), 'CamoufoxScraping'))
@@ -69,7 +70,7 @@ def run_scraper_sync(category: str, url: str):
         elif category == "MyChinaRoots":
             return MCR.main([url])
         elif category == "ZtZupu":
-            return ztzupu.main([url])
+            return ztzupu.main([re.sub(r'[^\d]', '', url)])
         else:
             print(f"Unknown category {category}")
             return None

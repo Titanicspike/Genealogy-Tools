@@ -5,7 +5,7 @@ import asyncio
 from bs4 import BeautifulSoup
 from Scraping.FolderNameSerializer import SerializeFolderName
 asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-async def getImage(session, url, num, attempt = 0):
+async def getImage(session, url, num, saveDir, attempt = 0):
     if attempt < 10:
         print("Getting image from: " + url)
         try:
@@ -15,16 +15,16 @@ async def getImage(session, url, num, attempt = 0):
                     print("Saved image to: " + f.name)
         except Exception as e:
             print(f"Attempt {attempt} failed: {e}")
-            await getImage(session, url, num, attempt + 1)
+            await getImage(session, url, num, saveDir, attempt + 1)
 
-async def imageManager():
+async def imageManager(imageUrls, saveDir):
     connector = aiohttp.TCPConnector(limit=100)
     async with aiohttp.ClientSession(connector=connector) as session:
-        await asyncio.gather(*[getImage(session, url, n) for n, url in enumerate(imageUrls)])
+        await asyncio.gather(*[getImage(session, url, n, saveDir) for n, url in enumerate(imageUrls)])
 
-def main(zupuIds, savePath = r"C:\Users\njwye\Documents\py\Genealogy Tools\Scraping\ztzupu"):
+def main(zupuIds, savePath = r"C:/Users/njwye/Documents/py/Genealogy Tools/Scraping/ztzupu"):
     for zupuId in zupuIds:
-        url = f'http://www.ztzupu.com/ztzupu/zpzoom/id/{zupuId}.html' 
+        url = f'http://www.ztzupu.com/ztzupu/zpzoom/id/{zupuId}.html'
         mainPage = BeautifulSoup(requests.get(url).text, 'html.parser')
 
 
@@ -33,10 +33,9 @@ def main(zupuIds, savePath = r"C:\Users\njwye\Documents\py\Genealogy Tools\Scrap
             imageUrls.append(f"https://www.ztzupu.com{a['href']}") # type: ignore
         name = SerializeFolderName(mainPage.find('title').text)
 
-
         fullSavePath = f"{savePath}/{name}/"
         os.makedirs(fullSavePath, exist_ok=True)
-        asyncio.run(imageManager())
+        asyncio.run(imageManager(imageUrls, fullSavePath))
         return fullSavePath
 
 if __name__ == '__main__':

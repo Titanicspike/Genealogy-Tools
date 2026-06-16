@@ -49,7 +49,12 @@
             <div class="bg-white rounded-xl shadow-sm border border-slate-200 flex-grow flex flex-col overflow-hidden">
                 <div class="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
                     <h2 class="text-lg font-semibold text-slate-700">Your Sources</h2>
-                    <span class="text-xs font-medium px-2.5 py-1 bg-indigo-100 text-indigo-700 rounded-full">Auto-updating</span>
+                    <div class="flex items-center gap-3">
+                        <span class="text-xs font-medium px-2.5 py-1 bg-indigo-100 text-indigo-700 rounded-full">Auto-updating</span>
+                        <button onclick="if(confirm('Are you sure you want to clear the entire database? This action cannot be undone.')) { htmx.ajax('POST', '/clear-database', '#source-list'); }" class="text-xs font-medium px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg transition-colors cursor-pointer">
+                            Clear DB
+                        </button>
+                    </div>
                 </div>
                 <div class="p-0 overflow-y-auto max-h-[500px]">
                     <ul id="source-list" hx-get="/sources" hx-trigger="load, every 5s" class="divide-y divide-slate-100">

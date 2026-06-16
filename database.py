@@ -29,3 +29,10 @@ async def get_db():
     db = await aiosqlite.connect(DB_PATH)
     db.row_factory = aiosqlite.Row
     return db
+
+async def clear_db():
+    """Clear all data from the database tables"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM pages")
+        await db.execute("DELETE FROM sources")
+        await db.commit()

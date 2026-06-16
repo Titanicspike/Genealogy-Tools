@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 import opencc
 import os
-from database import init_db, get_db
+from database import init_db, get_db, clear_db
 from tasks import process_jiapu_source
 from contextlib import asynccontextmanager
 
@@ -90,3 +90,9 @@ async def search(request: Request, query: str = ""):
         await db.close()
         
     return templates.TemplateResponse(request=request, name="partials/search_results.html", context={"request": request, "results": results, "query": query})
+
+@app.post("/clear-database")
+async def clear_database(request: Request):
+    await clear_db()
+    # Return empty source list and refresh the page
+    return templates.TemplateResponse(request=request, name="partials/source_list.html", context={"request": request, "sources": []})
