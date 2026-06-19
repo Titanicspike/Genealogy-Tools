@@ -1,0 +1,25 @@
+services:
+  hunyuan-ocr:
+    image: vllm/vllm-openai:latest
+    container_name: hunyuan-ocr
+    runtime: nvidia
+    ipc: host
+    ports:
+      - "9000:8000"
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command:
+      - --model
+      - tencent/HunyuanOCR
+      - --no-enable-prefix-caching
+      - --mm-processor-cache-gb
+      - "0"
+      - --gpu-memory-utilization
+      - "0.85"
