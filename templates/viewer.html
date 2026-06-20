@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image Viewer - Jiapu Source Manager</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- HTMX -->
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700&display=swap');
+        body {
+            font-family: 'Inter', 'Noto Sans TC', sans-serif;
+            background-color: #f8fafc;
+        }
+        .image-placeholder {
+            background: linear-gradient(135deg, #e2e8f0 0%, #cbd5e1 100%);
+            animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .gallery-image {
+            object-fit: cover;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+        .gallery-image:hover {
+            transform: scale(1.02);
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+        }
+    </style>
+</head>
+<body class="text-slate-800 antialiased">
+
+    <!-- Header -->
+    <header class="bg-indigo-600 text-white shadow-md">
+        <div class="container mx-auto px-6 py-4">
+            <div class="flex items-center gap-4 mb-2">
+                <a href="/" class="text-indigo-200 hover:text-white transition-colors">
+                    <svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
+                    </svg>
+                </a>
+                <h1 class="text-2xl font-bold tracking-tight">Image Viewer</h1>
+            </div>
+            {% if source %}
+            <div class="text-indigo-200 text-sm">
+                <span class="font-medium">{{ source.category }}</span> • 
+                <span class="text-xs">{{ image_count }} images</span>
+            </div>
+            {% endif %}
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="container mx-auto px-6 py-8">
+        {% if source %}
+        <div class="mb-6 flex justify-between items-center">
+            <div>
+                <h2 class="text-xl font-semibold text-slate-800 mb-1">Collection Images</h2>
+                <p class="text-sm text-slate-600">Viewing <span class="font-medium">{{ image_count }}</span> images from this collection</p>
+            </div>
+            <a href="{{ source.url }}" target="_blank" class="text-indigo-600 hover:text-indigo-800 text-sm font-medium underline">View Original Source →</a>
+        </div>
+
+        <!-- Infinite scroll container -->
+        <div id="gallery-container" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+            <!-- Images loaded via HTMX infinite scroll -->
+            <div hx-get="/api/images/{{ source.id }}?page={{ initial_page }}" 
+                 hx-trigger="load" 
+                 hx-target="#gallery-container" 
+                 hx-swap="innerHTML"
+                 class="col-span-full flex justify-center py-8">
+                <svg class="animate-spin h-8 w-8 text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+            </div>
+        </div>
+        {% else %}
+        <div class="text-center py-12">
+            <svg class="mx-auto h-12 w-12 text-slate-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4v.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+            </svg>
+            <h2 class="text-lg font-semibold text-slate-700 mb-2">{{ error }}</h2>
+            <p class="text-sm text-slate-500 mb-4">The requested collection could not be found.</p>
+            <a href="/" class="inline-block text-indigo-600 hover:text-indigo-800 font-medium">← Go back to search</a>
+        </div>
+        {% endif %}
+    </main>
+
+    <!-- Viewer.js is initialized via JS -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/viewerjs/1.10.5/viewer.min.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/viewerjs/1.10.5/viewer.min.js"></script>
+    <script>
+        const focusImageId = {{ focus_image_id if focus_image_id is not none else 'null' }};
+        let viewer = null;
+
+        function createViewer() {
+            if (viewer) {
+                viewer.destroy();
+            }
+
+            const galleryContainer = document.getElementById('gallery-container');
+            if (!galleryContainer) return;
+
+            viewer = new Viewer(galleryContainer, {
+                toolbar: {
+                    zoomIn: true,
+                    zoomOut: true,
+                    oneToOne: true,
+                    reset: true,
+                    prev: true,
+                    play: false,
+                    next: true,
+                    rotateLeft: false,
+                    rotateRight: false,
+                    flipHorizontal: false,
+                    flipVertical: false,
+                },
+                url(image) {
+                    return image.getAttribute('data-original') || image.src;
+                },
+                zoomRatio: 0.1,
+                minZoomRatio: 0.5,
+                maxZoomRatio: 5,
+                inline: false,
+                navbar: false,
+                title: false,
+                viewed() {
+                    if (focusImageId) {
+                        const imageElement = document.querySelector(`#gallery-container img[data-image-id='${focusImageId}']`);
+                        if (imageElement) {
+                            viewer.show(imageElement);
+                        }
+                    }
+                }
+            });
+        }
+
+        function openFocusedImage() {
+            if (!focusImageId || !viewer) return;
+            const imageElement = document.querySelector(`#gallery-container img[data-image-id='${focusImageId}']`);
+            if (imageElement) {
+                viewer.show(imageElement);
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            createViewer();
+            openFocusedImage();
+        });
+
+        document.body.addEventListener('htmx:afterSwap', function(event) {
+            if (!event.detail.target) return;
+            const target = event.detail.target;
+            if (target.id === 'gallery-container' || target.closest('#gallery-container')) {
+                createViewer();
+                openFocusedImage();
+            }
+        });
+
+        document.body.addEventListener('click', function(event) {
+            if (!viewer) return;
+
+            const imageTarget = event.target.closest('img[data-image-id]');
+            const cardTarget = event.target.closest('.gallery-link');
+            const target = imageTarget || (cardTarget && cardTarget.querySelector('img[data-image-id]'));
+
+            if (!target) return;
+            event.preventDefault();
+            viewer.show(target);
+        });
+    </script>
+</body>
+</html>

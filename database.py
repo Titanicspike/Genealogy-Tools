@@ -4,7 +4,14 @@ import os
 DB_PATH = "jiapu.db"
 
 async def init_db():
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB_PATH, timeout=30.0) as db:
+        # Enable WAL mode for better concurrency
+        await db.execute("PRAGMA journal_mode=WAL")
+        # Set synchronous mode to NORMAL for faster writes
+        await db.execute("PRAGMA synchronous=NORMAL")
+        # Increase the cache size for better performance
+        await db.execute("PRAGMA cache_size=10000")
+        
         await db.execute("""
             CREATE TABLE IF NOT EXISTS sources (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -26,7 +33,7 @@ async def init_db():
         await db.commit()
 
 async def get_db():
-    db = await aiosqlite.connect(DB_PATH)
+    db = await aiosqlite.connect(DB_PATH, timeout=30.0)
     db.row_factory = aiosqlite.Row
     return db
 

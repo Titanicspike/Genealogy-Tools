@@ -1,0 +1,56 @@
+<!-- Image Grid Partial - displays images with lazy loading -->
+<div class="contents" data-has-more="{{ 'true' if has_more else 'false' }}">
+    {% for image in images %}
+    <div class="gallery-link block" data-image-id="{{ image.id }}">
+        <div class="gallery-item group relative bg-white rounded-lg overflow-hidden shadow-sm border border-slate-200 hover:shadow-lg transition-all cursor-pointer">
+            <!-- Lazy-loaded image -->
+            <img class="gallery-image w-full h-48 object-cover"
+                 loading="lazy"
+                 src="{{ image.image_url }}"
+                 data-original="{{ image.image_url }}"
+                 data-image-id="{{ image.id }}"
+                 alt="Image {{ image.id }}"
+             onerror="this.style.display='none'; this.parentElement.querySelector('.image-error').style.display='flex';">
+        
+        <!-- Image error state -->
+        <div class="image-error hidden w-full h-48 bg-slate-100 flex items-center justify-center">
+            <div class="text-center">
+                <svg class="h-8 w-8 text-slate-400 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+                </svg>
+                <p class="text-xs text-slate-500">Image not found</p>
+            </div>
+        </div>
+        
+        <!-- Hover overlay with OCR text -->
+        <div class="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-70 transition-all duration-200 p-3 flex items-end">
+            <p class="text-white text-xs leading-relaxed max-h-24 overflow-y-auto opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                {{ image.ocr_text[:150] }}{% if image.ocr_text|length > 150 %}...{% endif %}
+            </p>
+        </div>
+        
+        <!-- Click indicator -->
+        <div class="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity bg-white rounded-full px-3 py-2 shadow-md flex items-center gap-2 text-sm font-medium text-indigo-600">
+            <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM13 10H7"></path>
+            </svg>
+            <span>View</span>
+        </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Load more trigger (infinite scroll) -->
+{% if has_more %}
+<div class="col-span-full flex justify-center py-8"
+     hx-get="/api/images/{{ source_id }}?page={{ page + 1 }}"
+     hx-trigger="intersect"
+     hx-swap="outerHTML"
+     hx-on::after-settle="console.log('Loaded page {{ page + 1 }}')">
+    <svg class="animate-spin h-6 w-6 text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+    </svg>
+</div>
+{% endif %}
