@@ -2,12 +2,13 @@ from camoufox.sync_api import Camoufox
 import time
 import os
 from Scraping.FolderNameSerializer import SerializeFolderName
+from Scraping.credentials import require
 
 
 print("starting")
 def main(ids, savePath = r"C:\Users\njwye\Documents\py\Genealogy Tools\Scraping\FamilySearch"):
-    username = "Titanicspike"
-    password = "6Wjb$9-&r4h&ZaY"
+    username = require("FAMILYSEARCH_USERNAME")
+    password = require("FAMILYSEARCH_PASSWORD")
     print("Does the function start?")
     with Camoufox() as browser:
         page = browser.new_page()

@@ -62,7 +62,9 @@
                 <h2 class="text-xl font-semibold text-slate-800 mb-1">Collection Images</h2>
                 <p class="text-sm text-slate-600">Viewing <span class="font-medium">{{ image_count }}</span> images from this collection</p>
             </div>
+            {% if source.category != 'Upload' %}
             <a href="{{ source.url }}" target="_blank" class="text-indigo-600 hover:text-indigo-800 text-sm font-medium underline">View Original Source →</a>
+            {% endif %}
         </div>
 
         <!-- Infinite scroll container -->
@@ -95,84 +97,98 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/viewerjs/1.10.5/viewer.min.css" />
     <script src="https://cdnjs.cloudflare.com/ajax/libs/viewerjs/1.10.5/viewer.min.js"></script>
     <script>
-        const focusImageId = {{ focus_image_id if focus_image_id is not none else 'null' }};
-        let viewer = null;
+        (function() {
+            if (window.jiapuViewerScriptLoaded) {
+                return;
+            }
+            window.jiapuViewerScriptLoaded = true;
 
-        function createViewer() {
-            if (viewer) {
-                viewer.destroy();
+            const focusImageId = {{ focus_image_id if focus_image_id is not none else 'null' }};
+            let viewer = null;
+
+            function getGalleryImages() {
+                return Array.from(document.querySelectorAll('#gallery-container img[data-image-id]'));
             }
 
-            const galleryContainer = document.getElementById('gallery-container');
-            if (!galleryContainer) return;
+            function getImageIndex(imageElement) {
+                return getGalleryImages().indexOf(imageElement);
+            }
 
-            viewer = new Viewer(galleryContainer, {
-                toolbar: {
-                    zoomIn: true,
-                    zoomOut: true,
-                    oneToOne: true,
-                    reset: true,
-                    prev: true,
-                    play: false,
-                    next: true,
-                    rotateLeft: false,
-                    rotateRight: false,
-                    flipHorizontal: false,
-                    flipVertical: false,
-                },
-                url(image) {
-                    return image.getAttribute('data-original') || image.src;
-                },
-                zoomRatio: 0.1,
-                minZoomRatio: 0.5,
-                maxZoomRatio: 5,
-                inline: false,
-                navbar: false,
-                title: false,
-                viewed() {
-                    if (focusImageId) {
-                        const imageElement = document.querySelector(`#gallery-container img[data-image-id='${focusImageId}']`);
-                        if (imageElement) {
-                            viewer.show(imageElement);
-                        }
-                    }
+            function viewImage(imageElement) {
+                if (!viewer || !imageElement) return;
+
+                const imageIndex = getImageIndex(imageElement);
+                if (imageIndex < 0) return;
+
+                viewer.view(imageIndex);
+            }
+
+            function createViewer() {
+                if (viewer) {
+                    viewer.destroy();
                 }
-            });
-        }
 
-        function openFocusedImage() {
-            if (!focusImageId || !viewer) return;
-            const imageElement = document.querySelector(`#gallery-container img[data-image-id='${focusImageId}']`);
-            if (imageElement) {
-                viewer.show(imageElement);
+                const galleryContainer = document.getElementById('gallery-container');
+                if (!galleryContainer) return;
+
+                viewer = new Viewer(galleryContainer, {
+                    toolbar: {
+                        zoomIn: true,
+                        zoomOut: true,
+                        oneToOne: true,
+                        reset: true,
+                        prev: true,
+                        play: false,
+                        next: true,
+                        rotateLeft: false,
+                        rotateRight: false,
+                        flipHorizontal: false,
+                        flipVertical: false,
+                    },
+                    url(image) {
+                        return image.getAttribute('data-original') || image.src;
+                    },
+                    zoomRatio: 0.1,
+                    minZoomRatio: 0.5,
+                    maxZoomRatio: 5,
+                    inline: false,
+                    navbar: false,
+                    title: false
+                });
             }
-        }
 
-        document.addEventListener('DOMContentLoaded', function() {
-            createViewer();
-            openFocusedImage();
-        });
+            function openFocusedImage() {
+                if (!focusImageId || !viewer) return;
+                const imageElement = document.querySelector(`#gallery-container img[data-image-id='${focusImageId}']`);
+                viewImage(imageElement);
+            }
 
-        document.body.addEventListener('htmx:afterSwap', function(event) {
-            if (!event.detail.target) return;
-            const target = event.detail.target;
-            if (target.id === 'gallery-container' || target.closest('#gallery-container')) {
+            document.addEventListener('DOMContentLoaded', function() {
                 createViewer();
                 openFocusedImage();
-            }
-        });
+            });
 
-        document.body.addEventListener('click', function(event) {
-            if (!viewer) return;
+            document.body.addEventListener('htmx:afterSwap', function(event) {
+                if (!event.detail.target) return;
+                const target = event.detail.target;
+                if (target.id === 'gallery-container' || target.closest('#gallery-container')) {
+                    createViewer();
+                    openFocusedImage();
+                }
+            });
 
-            const imageTarget = event.target.closest('img[data-image-id]');
-            const cardTarget = event.target.closest('.gallery-link');
-            const target = imageTarget || (cardTarget && cardTarget.querySelector('img[data-image-id]'));
+            document.body.addEventListener('click', function(event) {
+                if (!viewer) return;
 
-            if (!target) return;
-            event.preventDefault();
-            viewer.show(target);
-        });
+                const imageTarget = event.target.closest('img[data-image-id]');
+                const cardTarget = event.target.closest('.gallery-link');
+                const target = imageTarget || (cardTarget && cardTarget.querySelector('img[data-image-id]'));
+
+                if (!target) return;
+                event.preventDefault();
+                viewImage(target);
+            });
+        })();
     </script>
 </body>
 </html>

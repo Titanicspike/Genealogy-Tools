@@ -2,14 +2,15 @@ from camoufox.async_api import AsyncCamoufox
 import time
 import os
 from Scraping.FolderNameSerializer import SerializeFolderName
+from Scraping.credentials import require
 import asyncio
 import requests
 
-username = "23305018526547"
-password = "0926"
-
 
 async def mainAsync(ids, pathName):
+    username = require("MCR_USERNAME")
+    password = require("MCR_PASSWORD")
+
     async with AsyncCamoufox() as browser:
         page = await browser.new_page()
         await page.goto("https://login.rpa.sccl.org/login?qurl=https://mychinarootslibrary.com%2f")
@@ -21,7 +22,7 @@ async def mainAsync(ids, pathName):
             folder_name = await page.locator(".zupu-info > div:nth-child(1) > h1:nth-child(1)").inner_text()
             folder_name = SerializeFolderName(folder_name)
             print(folder_name)
-            fullSavePath = f"{pathName}\"{folder_name}"
+            fullSavePath = f"{pathName}/{folder_name}"
             os.makedirs(fullSavePath, exist_ok=True)
             await page.click(".zupu-info > div:nth-child(1) > div:nth-child(3) > button:nth-child(1) > div:nth-child(1)")
             await page.locator('.viewport').wait_for(state='visible', timeout=100000)
@@ -29,19 +30,20 @@ async def mainAsync(ids, pathName):
                 image_src = await page.locator(".image").get_attribute('src')
                 print(image_src)
                 response = requests.get(image_src)
-                with open(f"{fullSavePath}\{image_src.split('?')[0].split('/')[-1]}", "wb") as f:
+                with open(f"{fullSavePath}/{image_src.split('?')[0].split('/')[-1]}", "wb") as f:
                     f.write(response.content)
                 await page.click("[title = 'Next Page [PAGE DOWN]']")
             image_src = await page.locator(".image").get_attribute('src')
             print(image_src)
             response = requests.get(image_src)
-            with open(f"{fullSavePath}\{image_src.split('?')[0].split('/')[-1]}", "wb") as f:
+            with open(f"{fullSavePath}/{image_src.split('?')[0].split('/')[-1]}", "wb") as f:
                 f.write(response.content)
             print(f"Finished scraping {folder_name}")
             return fullSavePath
 
 def main(ids, pathName = r"C:\Users\njwye\Documents\py\Genealogy Tools\Scraping\MCR"):
-    asyncio.run(mainAsync(ids, pathName))
+    fullSavePath = asyncio.run(mainAsync(ids, pathName))
+    return fullSavePath
 
 if __name__ == '__main__':
     main(["3ff8274e-d4b7-4400-9fec-b742cabee362"])

@@ -13,14 +13,31 @@ async def init_db():
         await db.execute("PRAGMA cache_size=10000")
         
         await db.execute("""
+            CREATE TABLE IF NOT EXISTS topics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await db.execute("""
             CREATE TABLE IF NOT EXISTS sources (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 url TEXT NOT NULL,
                 category TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'Pending',
+                topic_id INTEGER REFERENCES topics(id) ON DELETE SET NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # Migrate pre-existing databases that were created before topics existed
+        cursor = await db.execute("PRAGMA table_info(sources)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        if "topic_id" not in columns:
+            await db.execute(
+                "ALTER TABLE sources ADD COLUMN topic_id INTEGER REFERENCES topics(id) ON DELETE SET NULL"
+            )
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_sources_topic_id ON sources(topic_id)")
         await db.execute("""
             CREATE TABLE IF NOT EXISTS pages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,4 +59,5 @@ async def clear_db():
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM pages")
         await db.execute("DELETE FROM sources")
+        await db.execute("DELETE FROM topics")
         await db.commit()

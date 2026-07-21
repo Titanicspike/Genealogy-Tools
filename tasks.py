@@ -5,6 +5,7 @@ import traceback
 import requests
 import base64
 import re
+import fitz
 from HunyuanOCR.HunyuanOCR import extractText
 print(os.path.join(os.path.dirname(__file__), 'CamoufoxScraping'))
 # Add CamoufoxScraping to the path so we can import the scrapers
@@ -38,6 +39,72 @@ async def perform_ocr(source_id: int, image_dir: str):
             finally:
                 await db.close()
 
+
+def render_pdf_pages(pdf_path: str, output_dir: str) -> list[str]:
+    """Render each PDF page at a readable resolution for the vision OCR model."""
+    os.makedirs(output_dir, exist_ok=True)
+    rendered_pages = []
+    with fitz.open(pdf_path) as document:
+        for page_number, page in enumerate(document, start=1):
+            pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+            output_path = os.path.join(output_dir, f"page_{page_number:04d}.png")
+            pixmap.save(output_path)
+            rendered_pages.append(output_path)
+    return rendered_pages
+
+
+async def process_uploaded_files(source_id: int, file_paths: list[str]):
+    """OCR uploaded image files and rasterize PDFs into OCR-ready page images."""
+    try:
+        db = await get_db()
+        try:
+            await db.execute("UPDATE sources SET status = 'Preparing files' WHERE id = ?", (source_id,))
+            await db.commit()
+        finally:
+            await db.close()
+
+        image_paths = []
+        for file_path in file_paths:
+            if file_path.lower().endswith(".pdf"):
+                rendered_dir = os.path.join(os.path.dirname(file_path), "rendered")
+                image_paths.extend(await asyncio.to_thread(render_pdf_pages, file_path, rendered_dir))
+            else:
+                image_paths.append(file_path)
+
+        db = await get_db()
+        try:
+            await db.execute("UPDATE sources SET status = 'Running OCR' WHERE id = ?", (source_id,))
+            await db.commit()
+        finally:
+            await db.close()
+
+        for image_path in image_paths:
+            ocr_text = await asyncio.to_thread(extractText, image_path)
+            db = await get_db()
+            try:
+                await db.execute(
+                    "INSERT INTO pages (source_id, image_path, ocr_text) VALUES (?, ?, ?)",
+                    (source_id, image_path, ocr_text),
+                )
+                await db.commit()
+            finally:
+                await db.close()
+
+        db = await get_db()
+        try:
+            await db.execute("UPDATE sources SET status = 'Completed' WHERE id = ?", (source_id,))
+            await db.commit()
+        finally:
+            await db.close()
+    except Exception as exc:
+        print(f"Failed to OCR uploaded source {source_id}: {exc}")
+        db = await get_db()
+        try:
+            await db.execute("UPDATE sources SET status = 'Failed' WHERE id = ?", (source_id,))
+            await db.commit()
+        finally:
+            await db.close()
+
 def run_scraper_sync(category: str, url: str):
     print(f"Running scraper for {category} with URL: {url}")
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
@@ -46,7 +113,7 @@ def run_scraper_sync(category: str, url: str):
             print([url])
             return FamilySearch.main([url])
         elif category == "MyChinaRoots":
-            return MCR.main([url])
+            return MCR.main([url.split("/")[-1]])
         elif category == "ZtZupu":
             return ztzupu.main([re.sub(r'[^\d]', '', url)])
         else:

@@ -1,0 +1,41 @@
+<div id="topic-picker" class="flex flex-col gap-3">
+    <div class="flex items-center gap-2">
+        <select id="topic-select" name="topic_id"
+                class="flex-grow px-3 py-2 border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all text-sm"
+                hx-get="/sources"
+                hx-target="#source-list"
+                hx-swap="innerHTML"
+                hx-on:change="htmx.trigger('#search-input', 'search')">
+            <option value="" {% if not selected_topic_id %}selected{% endif %}>All topics</option>
+            {% for topic in topics %}
+            <option value="{{ topic.id }}" {% if selected_topic_id == topic.id %}selected{% endif %}>
+                {{ topic.name }} ({{ topic.source_count }})
+            </option>
+            {% endfor %}
+        </select>
+
+        {% if selected_topic_id %}
+        <button type="button"
+                class="shrink-0 text-xs font-medium px-3 py-2 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg transition-colors"
+                hx-post="/topics/{{ selected_topic_id }}/delete"
+                hx-target="#topic-picker"
+                hx-swap="outerHTML"
+                hx-confirm="Delete this topic? Its sources will be kept but become unassigned."
+                hx-on::after-request="htmx.ajax('GET', '/sources', '#source-list'); htmx.trigger('#search-input', 'search');">
+            Delete
+        </button>
+        {% endif %}
+    </div>
+
+    <form class="flex gap-2"
+          hx-post="/topics"
+          hx-target="#topic-picker"
+          hx-swap="outerHTML"
+          hx-on::after-request="if(event.detail.successful) { this.reset(); htmx.ajax('GET', '/sources', '#source-list'); }">
+        <input type="text" name="name" placeholder="New topic name..." required maxlength="120"
+               class="flex-grow px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all text-sm">
+        <button type="submit" class="shrink-0 bg-slate-700 hover:bg-slate-800 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+            Create
+        </button>
+    </form>
+</div>

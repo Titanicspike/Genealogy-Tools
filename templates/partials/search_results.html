@@ -1,9 +1,16 @@
 {% if results %}
-    <div class="text-sm text-slate-500 mb-2 px-2">Found {{ results|length }} matches for "{{ query }}"</div>
+    <div class="text-sm text-slate-500 mb-2 px-2">
+        Found {{ results|length }} matches for "{{ query }}"{% if fuzzy %} across {{ variant_count }} OCR variants{% endif %}{% if topic_name %} in topic <span class="font-medium text-purple-700">{{ topic_name }}</span>{% endif %}
+    </div>
     {% for result in results %}
     <div class="bg-white border border-slate-200 rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow">
         <div class="flex justify-between items-start mb-2">
-            <span class="text-xs font-semibold px-2 py-1 bg-indigo-50 text-indigo-700 rounded">{{ result.category }}</span>
+            <div class="flex gap-2 items-center">
+                <span class="text-xs font-semibold px-2 py-1 bg-indigo-50 text-indigo-700 rounded">{{ result.category }}</span>
+                {% if result.topic_name %}
+                <span class="text-xs font-medium px-2 py-1 bg-purple-100 text-purple-700 rounded">{{ result.topic_name }}</span>
+                {% endif %}
+            </div>
             <div class="flex gap-2">
                 <a href="/viewer/{{ result.source_id }}?focus_image_id={{ result.id }}" class="text-xs text-emerald-600 hover:text-emerald-800 underline font-medium">View Image</a>
                 <a href="{{ result.url }}" target="_blank" class="text-xs text-indigo-600 hover:text-indigo-800 underline truncate max-w-[200px]" title="{{ result.url }}">View Source</a>

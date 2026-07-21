@@ -219,3 +219,34 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ---------------------------------------------------------------------------
+# Genealogy Tools
+#
+# Everything below is generated or downloaded at runtime. None of it is source.
+# Note the trailing slashes: they match the scrapers' output directories only,
+# leaving Scraping/FamilySearch.py, Scraping/MCR.py, and Scraping/ztzupu.py
+# tracked alongside them.
+# ---------------------------------------------------------------------------
+
+# Scraped page images, re-fetchable by re-running a source through the pipeline
+Scraping/FamilySearch/
+Scraping/MCR/
+Scraping/ztzupu/
+CamoufoxScraping/FamilySearch/
+
+# Files uploaded through the web UI, plus the PDF page renders derived from them
+uploads/
+
+# SQLite database and its WAL sidecars. init_db() recreates the schema on
+# startup, so a fresh clone comes up empty rather than broken.
+jiapu.db
+*.db-wal
+*.db-shm
+
+# OCR character-confusion map for fuzzy search: a ~13 MB external asset.
+# Fuzzy search degrades gracefully to exact matching when it is absent.
+similarCharacters.json
+
+# Debug dump of an OCR request, containing a base64-encoded page image
+HunyuanOCR/payload.json

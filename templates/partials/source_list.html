@@ -3,19 +3,45 @@
     <li class="px-6 py-4 hover:bg-slate-50 transition-colors">
         <div class="flex justify-between items-start">
             <div class="flex flex-col overflow-hidden mr-4">
+                {% if source.category == 'Upload' %}
+                <a href="/viewer/{{ source.id }}" class="text-sm font-semibold text-indigo-700 hover:text-indigo-900 hover:underline truncate" title="{{ source.url }}">{{ source.url[9:] }}</a>
+                {% else %}
                 <span class="text-sm font-semibold text-slate-800 truncate" title="{{ source.url }}">{{ source.url }}</span>
-                <div class="flex items-center gap-2 mt-1">
+                {% endif %}
+                <div class="flex items-center gap-2 mt-1 flex-wrap">
                     <span class="text-xs text-slate-500">{{ source.category }}</span>
                     <span class="text-slate-300">•</span>
                     <span class="text-xs text-slate-400">{{ source.created_at[:16] }}</span>
+                    {% if source.topic_name %}
+                    <span class="text-xs font-medium px-2 py-0.5 bg-purple-100 text-purple-700 rounded-full">{{ source.topic_name }}</span>
+                    {% endif %}
+                </div>
+                <select name="topic_id"
+                        title="Move this source to a topic"
+                        class="mt-2 max-w-[220px] text-xs px-2 py-1 border border-slate-200 rounded-md bg-white text-slate-600 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+                        hx-post="/sources/{{ source.id }}/topic"
+                        hx-trigger="change"
+                        hx-target="#source-list"
+                        hx-swap="innerHTML"
+                        hx-include="this">
+                    <option value="" {% if not source.topic_id %}selected{% endif %}>No topic</option>
+                    {% for topic in topics %}
+                    <option value="{{ topic.id }}" {% if source.topic_id == topic.id %}selected{% endif %}>{{ topic.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            {% if source.status == 'Completed' %}
+            <div class="flex flex-col items-end gap-2">
+                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800 whitespace-nowrap">
+                    <svg class="-ml-0.5 mr-1.5 h-2 w-2 text-green-400" fill="currentColor" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" /></svg>
+                    Completed
+                </span>
+                <div class="flex gap-2">
+                    <button type="button" onclick="copySourceText({{ source.id }}, this)" class="text-xs font-medium text-indigo-700 hover:text-indigo-900">Copy text</button>
+                    <a href="/sources/{{ source.id }}/text?download=true" class="text-xs font-medium text-indigo-700 hover:text-indigo-900">Download text</a>
                 </div>
             </div>
-            
-            {% if source.status == 'Completed' %}
-            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800 whitespace-nowrap">
-                <svg class="-ml-0.5 mr-1.5 h-2 w-2 text-green-400" fill="currentColor" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" /></svg>
-                Completed
-            </span>
             {% elif source.status == 'Failed' %}
             <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800 whitespace-nowrap">
                 <svg class="-ml-0.5 mr-1.5 h-2 w-2 text-red-400" fill="currentColor" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" /></svg>
@@ -30,8 +56,12 @@
         </div>
     </li>
     {% endfor %}
+{% elif selected_topic_id %}
+    <div class="p-8 text-center text-slate-400 text-sm">
+        No sources in this topic yet. Add a link or upload files while this topic is selected.
+    </div>
 {% else %}
     <div class="p-8 text-center text-slate-400 text-sm">
-        No sources added yet. Add a link above to get started.
+        No sources added yet. Add a link or upload files to get started.
     </div>
 {% endif %}
