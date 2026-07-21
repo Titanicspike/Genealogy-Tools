@@ -107,7 +107,13 @@ async def process_uploaded_files(source_id: int, file_paths: list[str]):
 
 def run_scraper_sync(category: str, url: str):
     print(f"Running scraper for {category} with URL: {url}")
-    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    # Camoufox drives a browser subprocess, which on Windows needs the Proactor
+    # loop; the Selector loop there cannot spawn subprocesses at all. Importing
+    # ztzupu sets a global Selector policy, so reassert Proactor before every
+    # scrape. On other platforms the default loop already handles subprocesses,
+    # and these policy classes do not exist.
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
     try:
         if category == "FamilySearch":
             print([url])

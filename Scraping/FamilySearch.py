@@ -3,10 +3,11 @@ import time
 import os
 from Scraping.FolderNameSerializer import SerializeFolderName
 from Scraping.credentials import require
+from Scraping.paths import FAMILYSEARCH_DIR, book_dir
 
 
 print("starting")
-def main(ids, savePath = r"C:\Users\njwye\Documents\py\Genealogy Tools\Scraping\FamilySearch"):
+def main(ids, savePath = FAMILYSEARCH_DIR):
     username = require("FAMILYSEARCH_USERNAME")
     password = require("FAMILYSEARCH_PASSWORD")
     print("Does the function start?")
@@ -27,8 +28,7 @@ def main(ids, savePath = r"C:\Users\njwye\Documents\py\Genealogy Tools\Scraping\
             time.sleep(3)
             folder_name = page.locator("h1.textBaseCss_tt5gnaq > span:nth-child(1)").inner_text()
             print(folder_name)
-            fullSavePath = f"{savePath}\{SerializeFolderName(folder_name)}"
-            os.makedirs(fullSavePath, exist_ok=True)
+            fullSavePath = book_dir(savePath, SerializeFolderName(folder_name))
             print(f"Scraping {folder_name}")
             page.fill("[aria-label='Enter Image number']", "1")
             while page.locator("//button[@aria-label='Next Image']").get_attribute('aria-disabled') == 'false':
@@ -37,7 +37,7 @@ def main(ids, savePath = r"C:\Users\njwye\Documents\py\Genealogy Tools\Scraping\
                         with page.expect_download(timeout=1000) as download_info:
                             page.click("//button[@aria-label='Download']", timeout=1000)
                         download = download_info.value
-                        download.save_as(f"{fullSavePath}\{download.suggested_filename}")
+                        download.save_as(os.path.join(fullSavePath, download.suggested_filename))
                         page.click("//button[@aria-label='Next Image']")
                         break
                     except Exception as e:
@@ -46,7 +46,7 @@ def main(ids, savePath = r"C:\Users\njwye\Documents\py\Genealogy Tools\Scraping\
             with page.expect_download() as download_info:
                 page.click("//button[@aria-label='Download']")
             download = download_info.value
-            download.save_as(f"{fullSavePath}\{download.suggested_filename}")
+            download.save_as(os.path.join(fullSavePath, download.suggested_filename))
             print(f"Finished scraping {folder_name}")
         print("If we make it this far, I'll be amazed")
         return fullSavePath

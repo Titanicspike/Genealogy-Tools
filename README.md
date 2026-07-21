@@ -116,12 +116,27 @@ Scraped and uploaded images are served through static mounts (`/images`, `/camou
   for the OCR server. The compose file requests all GPUs and 85% of VRAM. You can run the
   web app, scrapers, and search without this, but OCR of new pages will fail.
 
+**Platform support.** The app, scrapers, and search run on Windows, Linux, and macOS.
+The OCR server is the one piece that does not travel: it needs an NVIDIA GPU, so it runs
+on Windows and Linux but not on Apple Silicon. On a Mac you can still scrape, upload,
+browse, and search — or point `base_url` in `HunyuanOCR/HunyuanOCR.py` at a machine that
+does have a GPU.
+
+Run commands from the project root. `main.py` mounts its static image directories by
+relative path, so the working directory matters.
+
 ### 1. Install Python dependencies
 
 ```bash
 python -m venv .venv
-.venv\Scripts\activate          # Windows
-# source .venv/bin/activate     # macOS / Linux
+```
+
+```bash
+.venv\Scripts\activate            # Windows (PowerShell / cmd)
+source .venv/bin/activate         # macOS / Linux
+```
+
+```bash
 pip install -r requirements.txt
 ```
 
@@ -204,10 +219,20 @@ values is still recoverable from history, so **treat all four as compromised and
 them.** Moving them to `.env` protects future commits, not past ones — only rewriting
 history (or rotating) removes the exposure.
 
-**Scraper output paths are absolute and machine-specific.** All three scrapers in
-`Scraping/` default `savePath` to `C:\Users\njwye\Documents\py\Genealogy Tools\...`, so
-they only work on the original machine. These need to become paths relative to the project
-root before the project runs anywhere else.
+**Windows event loop handling is subtle.** Two `asyncio` policy calls exist purely for
+Windows and are guarded by `sys.platform == "win32"`: `ztzupu.py` prefers the Selector loop
+(aiohttp misbehaves under Proactor), while `tasks.py` reasserts Proactor before every scrape
+(Camoufox needs subprocess support, which the Selector loop lacks on Windows). Because
+`ztzupu.py` sets its policy globally at import and `tasks.py` overrides it per scrape,
+ZtZupu actually runs under Proactor when driven by the app — only matching its stated
+preference when run standalone. It works, but if you see aiohttp teardown errors on
+Windows, that contradiction is where to look. Neither call does anything off Windows.
+
+**A database created on Windows does not fully port.** `pages.image_path` rows written on
+Windows contain backslashes, and `get_image_url()` normalizes those when building URLs.
+Moving an existing `jiapu.db` to Linux or macOS will still resolve for display, but any
+code doing raw filesystem access on those stored paths would need them normalized first.
+Freshly created rows use native separators and are unaffected.
 
 **`OCRApi.py` is dead.** It is a standalone experiment against a PaddleX layout-parsing
 server on port 8085, pointing at an image in an unrelated directory. Nothing imports it;
