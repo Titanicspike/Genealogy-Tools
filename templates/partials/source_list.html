@@ -5,7 +5,10 @@
             <div class="flex flex-col overflow-hidden mr-4">
                 {% if source.category == 'Upload' %}
                 <a href="/viewer/{{ source.id }}" class="text-sm font-semibold text-indigo-700 hover:text-indigo-900 hover:underline truncate" title="{{ source.url }}">{{ source.url[9:] }}</a>
+                {% elif source.title %}
+                <a href="/viewer/{{ source.id }}" class="text-sm font-semibold text-indigo-700 hover:text-indigo-900 hover:underline truncate" title="{{ source.title }}">{{ source.title }}</a>
                 {% else %}
+                {# No title yet: still scraping, or the scrape failed before naming a folder #}
                 <span class="text-sm font-semibold text-slate-800 truncate" title="{{ source.url }}">{{ source.url }}</span>
                 {% endif %}
                 <div class="flex items-center gap-2 mt-1 flex-wrap">
@@ -16,10 +19,15 @@
                     <span class="text-xs font-medium px-2 py-0.5 bg-purple-100 text-purple-700 rounded-full">{{ source.topic_name }}</span>
                     {% endif %}
                 </div>
+                {% if source.title and source.category != 'Upload' %}
+                <a href="{{ source.url }}" target="_blank" rel="noopener" class="text-xs text-slate-400 hover:text-indigo-600 hover:underline truncate mt-1" title="{{ source.url }}">{{ source.url }}</a>
+                {% endif %}
                 <select name="topic_id"
                         title="Move this source to a topic"
                         class="mt-2 max-w-[220px] text-xs px-2 py-1 border border-slate-200 rounded-md bg-white text-slate-600 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
-                        hx-post="/sources/{{ source.id }}/topic"
+                        {# Carry the active filter in the URL: the posted topic_id is this
+                           source's new topic, so it cannot double as the list filter. #}
+                        hx-post="/sources/{{ source.id }}/topic{% if selected_topic_id %}?filter_topic_id={{ selected_topic_id }}{% endif %}"
                         hx-trigger="change"
                         hx-target="#source-list"
                         hx-swap="innerHTML"
@@ -31,8 +39,8 @@
                 </select>
             </div>
 
-            {% if source.status == 'Completed' %}
-            <div class="flex flex-col items-end gap-2">
+            <div class="flex flex-col items-end gap-2 shrink-0">
+                {% if source.status == 'Completed' %}
                 <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800 whitespace-nowrap">
                     <svg class="-ml-0.5 mr-1.5 h-2 w-2 text-green-400" fill="currentColor" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" /></svg>
                     Completed
@@ -41,18 +49,36 @@
                     <button type="button" onclick="copySourceText({{ source.id }}, this)" class="text-xs font-medium text-indigo-700 hover:text-indigo-900">Copy text</button>
                     <a href="/sources/{{ source.id }}/text?download=true" class="text-xs font-medium text-indigo-700 hover:text-indigo-900">Download text</a>
                 </div>
+                {% elif source.status == 'Failed' %}
+                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800 whitespace-nowrap cursor-help"
+                      title="{{ source.error or 'This source failed to process. No further details were recorded.' }}">
+                    <svg class="-ml-0.5 mr-1.5 h-2 w-2 text-red-400" fill="currentColor" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" /></svg>
+                    Failed
+                </span>
+                <button type="button"
+                        class="text-xs font-medium text-indigo-700 hover:text-indigo-900"
+                        hx-post="/sources/{{ source.id }}/retry{% if selected_topic_id %}?filter_topic_id={{ selected_topic_id }}{% endif %}"
+                        hx-target="#source-list"
+                        hx-swap="innerHTML">
+                    Retry
+                </button>
+                {% else %}
+                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800 whitespace-nowrap">
+                    <svg class="animate-pulse -ml-0.5 mr-1.5 h-2 w-2 text-amber-500" fill="currentColor" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" /></svg>
+                    {{ source.status }}
+                </span>
+                {% endif %}
+
+                {# Same filter hand-off as the topic select, so the list keeps its filter. #}
+                <button type="button"
+                        class="text-xs font-medium text-red-600 hover:text-red-800"
+                        hx-post="/sources/{{ source.id }}/delete{% if selected_topic_id %}?filter_topic_id={{ selected_topic_id }}{% endif %}"
+                        hx-target="#source-list"
+                        hx-swap="innerHTML"
+                        hx-confirm="Delete this source and its OCR text? This cannot be undone.">
+                    Delete
+                </button>
             </div>
-            {% elif source.status == 'Failed' %}
-            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800 whitespace-nowrap">
-                <svg class="-ml-0.5 mr-1.5 h-2 w-2 text-red-400" fill="currentColor" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" /></svg>
-                Failed
-            </span>
-            {% else %}
-            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800 whitespace-nowrap">
-                <svg class="animate-pulse -ml-0.5 mr-1.5 h-2 w-2 text-amber-500" fill="currentColor" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" /></svg>
-                {{ source.status }}
-            </span>
-            {% endif %}
         </div>
     </li>
     {% endfor %}

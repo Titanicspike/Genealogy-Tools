@@ -26,4 +26,4 @@ services:
       - --max-model-len
       - "65536"
       - --max-num-batched-tokens
-      - "8192"
+      - "16384"

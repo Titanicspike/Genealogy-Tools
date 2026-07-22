@@ -96,7 +96,9 @@
                 </div>
                 <div class="p-0 overflow-y-auto max-h-[500px]">
                     <ul id="source-list" hx-get="/sources" hx-trigger="load, every 5s" hx-include="#topic-select"
-                        hx-on::before-request="if (this.contains(document.activeElement) && document.activeElement.tagName === 'SELECT') event.preventDefault();"
+                        {# htmx events bubble, so only pause this list's own poll — without the
+                           target check we would also cancel the per-source topic POSTs below. #}
+                        hx-on::before-request="if (event.target === this && this.contains(document.activeElement) && document.activeElement.tagName === 'SELECT') event.preventDefault();"
                         class="divide-y divide-slate-100">
                         <!-- Sources injected here via HTMX -->
                         <div class="p-8 text-center text-slate-400 text-sm">Loading sources...</div>

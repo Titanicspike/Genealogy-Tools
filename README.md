@@ -35,12 +35,20 @@ web server stays responsive, and the UI polls `/sources` every 5 seconds to show
 | Table | Purpose |
 |---|---|
 | `topics` | Optional grouping. A name, unique case-insensitively. |
-| `sources` | One book or upload batch: `url`, `category`, processing `status`, and a nullable `topic_id`. |
+| `sources` | One book or upload batch: `url`, `category`, processing `status`, a nullable `topic_id`, and a `title`. |
 | `pages` | One image per row: `source_id`, `image_path`, and the extracted `ocr_text`. |
 
-`init_db()` runs on startup and is idempotent. It also carries a small migration that adds
-`sources.topic_id` to databases created before topics existed, so an older `jiapu.db` keeps
-working without manual intervention.
+`init_db()` runs on startup and is idempotent. It also carries small migrations that add
+`sources.topic_id` and `sources.title` to databases created before those columns existed,
+so an older `jiapu.db` keeps working without manual intervention.
+
+**Titles.** The scrapers save each book into a directory named after the book, so
+`process_jiapu_source` records that directory name as the source's `title` — which is what
+the UI shows, with the URL demoted to secondary text. A one-time backfill in `init_db()`
+derives titles for older scraped sources from the parent directory of their page images.
+Sources with no pages (a failed scrape) have no title and fall back to displaying the URL.
+Uploads are excluded from the backfill, since their parent directory is just `source_<id>`;
+they continue to show the uploaded filename.
 
 A source's `status` walks through `Pending` → `Scraping` → `Running OCR` → `Completed`,
 or lands on `Failed`. Uploads use `Saving upload` → `Preparing files` → `Running OCR`.

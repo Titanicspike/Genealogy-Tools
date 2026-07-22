@@ -43,11 +43,11 @@
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
                     </svg>
                 </a>
-                <h1 class="text-2xl font-bold tracking-tight">Image Viewer</h1>
+                <h1 class="text-2xl font-bold tracking-tight truncate">{{ source.title if source and source.title else "Image Viewer" }}</h1>
             </div>
             {% if source %}
             <div class="text-indigo-200 text-sm">
-                <span class="font-medium">{{ source.category }}</span> • 
+                <span class="font-medium">{{ source.category }}</span> •
                 <span class="text-xs">{{ image_count }} images</span>
             </div>
             {% endif %}
@@ -59,6 +59,7 @@
         {% if source %}
         <div class="mb-6 flex justify-between items-center">
             <div>
+                {# The title already headlines the page header above, so keep this generic #}
                 <h2 class="text-xl font-semibold text-slate-800 mb-1">Collection Images</h2>
                 <p class="text-sm text-slate-600">Viewing <span class="font-medium">{{ image_count }}</span> images from this collection</p>
             </div>

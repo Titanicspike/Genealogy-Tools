@@ -15,6 +15,18 @@ from Scraping import FamilySearch, MCR, ztzupu
 from database import get_db
 
 
+def format_error(exc: Exception) -> str:
+    """Build a short, human-readable reason for a failed source.
+
+    Kept concise since it surfaces in a hover tooltip on the source list. The
+    exception type is included because some errors (e.g. TimeoutError) carry an
+    empty message that would otherwise be useless on its own.
+    """
+    message = str(exc).strip()
+    reason = f"{type(exc).__name__}: {message}" if message else type(exc).__name__
+    return reason[:500]
+
+
 async def perform_ocr(source_id: int, image_dir: str):
     if not image_dir or not os.path.isdir(image_dir):
         print(f"Directory not found or invalid: {image_dir}")
@@ -58,7 +70,10 @@ async def process_uploaded_files(source_id: int, file_paths: list[str]):
     try:
         db = await get_db()
         try:
-            await db.execute("UPDATE sources SET status = 'Preparing files' WHERE id = ?", (source_id,))
+            await db.execute(
+                "UPDATE sources SET status = 'Preparing files', error = NULL WHERE id = ?",
+                (source_id,),
+            )
             await db.commit()
         finally:
             await db.close()
@@ -100,7 +115,10 @@ async def process_uploaded_files(source_id: int, file_paths: list[str]):
         print(f"Failed to OCR uploaded source {source_id}: {exc}")
         db = await get_db()
         try:
-            await db.execute("UPDATE sources SET status = 'Failed' WHERE id = ?", (source_id,))
+            await db.execute(
+                "UPDATE sources SET status = 'Failed', error = ? WHERE id = ?",
+                (format_error(exc), source_id),
+            )
             await db.commit()
         finally:
             await db.close()
@@ -138,7 +156,10 @@ async def process_jiapu_source(source_id: int, url: str, category: str):
         # Update status to Scraping
         db = await get_db()
         try:
-            await db.execute("UPDATE sources SET status = 'Scraping' WHERE id = ?", (source_id,))
+            await db.execute(
+                "UPDATE sources SET status = 'Scraping', error = NULL WHERE id = ?",
+                (source_id,),
+            )
             await db.commit()
         finally:
             await db.close()
@@ -148,10 +169,19 @@ async def process_jiapu_source(source_id: int, url: str, category: str):
         image_dir = await asyncio.to_thread(run_scraper_sync, category, url)
         
         print("3")
-        # Update status to OCR
+        # Update status to OCR, and record the book's title. The scraper returns
+        # the directory it saved into, which is named after the book itself.
+        # normpath first so a trailing separator does not yield an empty name.
+        title = os.path.basename(os.path.normpath(image_dir)) if image_dir else None
         db = await get_db()
         try:
-            await db.execute("UPDATE sources SET status = 'Running OCR' WHERE id = ?", (source_id,))
+            if title:
+                await db.execute(
+                    "UPDATE sources SET status = 'Running OCR', title = ? WHERE id = ?",
+                    (title, source_id),
+                )
+            else:
+                await db.execute("UPDATE sources SET status = 'Running OCR' WHERE id = ?", (source_id,))
             await db.commit()
         finally:
             await db.close()
@@ -177,7 +207,10 @@ async def process_jiapu_source(source_id: int, url: str, category: str):
         print(f"Failed to process source {source_id}: {e}")
         db = await get_db()
         try:
-            await db.execute("UPDATE sources SET status = 'Failed' WHERE id = ?", (source_id,))
+            await db.execute(
+                "UPDATE sources SET status = 'Failed', error = ? WHERE id = ?",
+                (format_error(e), source_id),
+            )
             await db.commit()
         finally:
             await db.close()

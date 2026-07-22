@@ -258,8 +258,17 @@ async def delete_topic(request: Request, topic_id: int):
 
 
 @app.post("/sources/{source_id}/topic", response_class=HTMLResponse)
-async def set_source_topic(request: Request, source_id: int, topic_id: str = Form(None)):
-    """Move an existing source into (or out of) a topic."""
+async def set_source_topic(
+    request: Request,
+    source_id: int,
+    topic_id: str = Form(None),
+    filter_topic_id: str | None = None,
+):
+    """Move an existing source into (or out of) a topic.
+
+    filter_topic_id is the topic the list is currently filtered by, so the
+    re-rendered list keeps that filter instead of falling back to all topics.
+    """
     new_topic_id = parse_topic_id(topic_id)
     db = await get_db()
     try:
@@ -273,7 +282,95 @@ async def set_source_topic(request: Request, source_id: int, topic_id: str = For
     finally:
         await db.close()
 
-    return await get_sources(request)
+    return await get_sources(request, topic_id=filter_topic_id)
+
+
+@app.post("/sources/{source_id}/delete", response_class=HTMLResponse)
+async def delete_source(
+    request: Request,
+    source_id: int,
+    filter_topic_id: str | None = None,
+):
+    """Delete one source along with its OCR'd pages.
+
+    Only upload files are removed from disk: they live in uploads/source_<id>/,
+    which this app created and owns. Scraped images sit in directories named
+    after the book, which a second source for the same book would share, so
+    those are left alone rather than risking someone else's data.
+    """
+    db = await get_db()
+    try:
+        cursor = await db.execute("SELECT category FROM sources WHERE id = ?", (source_id,))
+        source = await cursor.fetchone()
+        if not source:
+            raise HTTPException(status_code=404, detail="Source not found")
+
+        await db.execute("DELETE FROM pages WHERE source_id = ?", (source_id,))
+        await db.execute("DELETE FROM sources WHERE id = ?", (source_id,))
+        await db.commit()
+    finally:
+        await db.close()
+
+    if source["category"] == "Upload":
+        shutil.rmtree(os.path.join(UPLOAD_DIR, f"source_{source_id}"), ignore_errors=True)
+
+    return await get_sources(request, topic_id=filter_topic_id)
+
+
+@app.post("/sources/{source_id}/retry", response_class=HTMLResponse)
+async def retry_source(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    source_id: int,
+    filter_topic_id: str | None = None,
+):
+    """Re-run a failed source from scratch.
+
+    Any pages produced by the partial run are cleared first so a successful
+    retry doesn't leave duplicate OCR text behind. Uploads are re-processed from
+    the original files still sitting in uploads/source_<id>/; scrapes just re-run
+    against the stored URL.
+    """
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT url, category, status FROM sources WHERE id = ?", (source_id,)
+        )
+        source = await cursor.fetchone()
+        if not source:
+            raise HTTPException(status_code=404, detail="Source not found")
+        if source["status"] != "Failed":
+            raise HTTPException(status_code=409, detail="Only failed sources can be retried.")
+
+        if source["category"] == "Upload":
+            source_dir = os.path.join(UPLOAD_DIR, f"source_{source_id}")
+            saved_paths = [
+                os.path.join(source_dir, name)
+                for name in sorted(os.listdir(source_dir))
+                if os.path.isfile(os.path.join(source_dir, name))
+            ] if os.path.isdir(source_dir) else []
+            if not saved_paths:
+                raise HTTPException(
+                    status_code=410,
+                    detail="The uploaded files for this source are no longer available.",
+                )
+
+        await db.execute("DELETE FROM pages WHERE source_id = ?", (source_id,))
+        await db.execute(
+            "UPDATE sources SET status = 'Pending', error = NULL WHERE id = ?", (source_id,)
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+    if source["category"] == "Upload":
+        background_tasks.add_task(process_uploaded_files, source_id, saved_paths)
+    else:
+        background_tasks.add_task(
+            process_jiapu_source, source_id, source["url"], source["category"]
+        )
+
+    return await get_sources(request, topic_id=filter_topic_id)
 
 
 @app.post("/add-source", response_class=HTMLResponse)
@@ -483,7 +580,8 @@ async def search(request: Request, query: str = "", fuzzy: bool = False, topic_i
                 params.append(selected_topic_id)
 
             cursor = await db.execute(f"""
-                SELECT p.id, p.source_id, p.ocr_text, p.image_path, s.url, s.category, t.name AS topic_name
+                SELECT p.id, p.source_id, p.ocr_text, p.image_path, s.url, s.category,
+                       s.title AS source_title, t.name AS topic_name
                 FROM pages p
                 JOIN sources s ON p.source_id = s.id
                 LEFT JOIN topics t ON s.topic_id = t.id

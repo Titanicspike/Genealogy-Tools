@@ -4,6 +4,9 @@
     </div>
     {% for result in results %}
     <div class="bg-white border border-slate-200 rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow">
+        {% if result.source_title %}
+        <div class="text-sm font-semibold text-slate-800 mb-2 truncate" title="{{ result.source_title }}">{{ result.source_title }}</div>
+        {% endif %}
         <div class="flex justify-between items-start mb-2">
             <div class="flex gap-2 items-center">
                 <span class="text-xs font-semibold px-2 py-1 bg-indigo-50 text-indigo-700 rounded">{{ result.category }}</span>
