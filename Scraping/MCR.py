@@ -6,6 +6,7 @@ from Scraping.credentials import require
 from Scraping.paths import MCR_DIR, book_dir
 import asyncio
 import requests
+from urllib.parse import unquote
 
 
 async def mainAsync(ids, pathName):
@@ -30,13 +31,13 @@ async def mainAsync(ids, pathName):
                 image_src = await page.locator(".image").get_attribute('src')
                 print(image_src)
                 response = requests.get(image_src)
-                with open(os.path.join(fullSavePath, image_src.split('?')[0].split('/')[-1]), "wb") as f:
+                with open(os.path.join(fullSavePath, unquote(image_src.split('?')[0].split('/')[-1])), "wb") as f:
                     f.write(response.content)
                 await page.click("[title = 'Next Page [PAGE DOWN]']")
             image_src = await page.locator(".image").get_attribute('src')
             print(image_src)
             response = requests.get(image_src)
-            with open(os.path.join(fullSavePath, image_src.split('?')[0].split('/')[-1]), "wb") as f:
+            with open(os.path.join(fullSavePath, unquote(image_src.split('?')[0].split('/')[-1])), "wb") as f:
                 f.write(response.content)
             print(f"Finished scraping {folder_name}")
             return fullSavePath

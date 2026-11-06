@@ -106,6 +106,7 @@
 
             const focusImageId = {{ focus_image_id if focus_image_id is not none else 'null' }};
             let viewer = null;
+            let focusHandled = false;
 
             function getGalleryImages() {
                 return Array.from(document.querySelectorAll('#gallery-container img[data-image-id]'));
@@ -116,7 +117,11 @@
             }
 
             function viewImage(imageElement) {
-                if (!viewer || !imageElement) return;
+                if (!imageElement) return;
+
+                // Make sure images added by infinite scroll are known to the viewer.
+                syncViewer();
+                if (!viewer) return;
 
                 const imageIndex = getImageIndex(imageElement);
                 if (imageIndex < 0) return;
@@ -124,11 +129,18 @@
                 viewer.view(imageIndex);
             }
 
-            function createViewer() {
+            // Viewer.js snapshots the image list when it is constructed and does not
+            // watch for DOM changes, so every batch of lazily loaded images has to be
+            // pushed into the existing instance with update().
+            function syncViewer() {
                 if (viewer) {
-                    viewer.destroy();
+                    viewer.update();
+                    return;
                 }
+                createViewer();
+            }
 
+            function createViewer() {
                 const galleryContainer = document.getElementById('gallery-container');
                 if (!galleryContainer) return;
 
@@ -159,28 +171,42 @@
             }
 
             function openFocusedImage() {
-                if (!focusImageId || !viewer) return;
+                if (!focusImageId || focusHandled) return;
                 const imageElement = document.querySelector(`#gallery-container img[data-image-id='${focusImageId}']`);
+                if (!imageElement) return;
+                focusHandled = true;
                 viewImage(imageElement);
             }
 
-            document.addEventListener('DOMContentLoaded', function() {
+            function onGalleryUpdated() {
+                syncViewer();
+                openFocusedImage();
+            }
+
+            function init() {
                 createViewer();
                 openFocusedImage();
-            });
+            }
 
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            // The infinite-scroll trigger swaps itself with outerHTML, so the swap
+            // target is detached by the time this fires; the event is dispatched on the
+            // newly inserted nodes instead, which is what event.target points at.
             document.body.addEventListener('htmx:afterSwap', function(event) {
-                if (!event.detail.target) return;
-                const target = event.detail.target;
-                if (target.id === 'gallery-container' || target.closest('#gallery-container')) {
-                    createViewer();
-                    openFocusedImage();
+                const galleryContainer = document.getElementById('gallery-container');
+                const swapped = event.target;
+                if (!galleryContainer || !swapped) return;
+                if (swapped === galleryContainer || galleryContainer.contains(swapped)) {
+                    onGalleryUpdated();
                 }
             });
 
             document.body.addEventListener('click', function(event) {
-                if (!viewer) return;
-
                 const imageTarget = event.target.closest('img[data-image-id]');
                 const cardTarget = event.target.closest('.gallery-link');
                 const target = imageTarget || (cardTarget && cardTarget.querySelector('img[data-image-id]'));

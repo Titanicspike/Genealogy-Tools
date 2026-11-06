@@ -208,8 +208,8 @@ the fuzzy checkbox simply falls back to Simplified/Traditional matching only —
 ### 6. Run
 
 ```bash
-python -m uvicorn main:app --reload
+python -m uvicorn main:app --port 9999 --reload
 ```
 
-Then open <http://127.0.0.1:8000>. The database and `uploads/` directory are created
+Then open <http://127.0.0.1:9999>. The database and `uploads/` directory are created
 automatically on first start.
