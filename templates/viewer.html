@@ -3,219 +3,972 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Image Viewer - Jiapu Source Manager</title>
-    <!-- Tailwind CSS -->
+    <title>{{ source.title if source and source.title else "Page Viewer" }} - Jiapu Source Manager</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- HTMX -->
-    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700&display=swap');
-        body {
-            font-family: 'Inter', 'Noto Sans TC', sans-serif;
-            background-color: #f8fafc;
-        }
-        .image-placeholder {
-            background: linear-gradient(135deg, #e2e8f0 0%, #cbd5e1 100%);
-            animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-        }
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-        .gallery-image {
-            object-fit: cover;
-            transition: transform 0.3s ease, box-shadow 0.3s ease;
-        }
-        .gallery-image:hover {
-            transform: scale(1.02);
-            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
-        }
+        body { font-family: 'Inter', 'Noto Sans TC', sans-serif; }
+        .ocr-text { font-family: 'Noto Sans TC', 'Inter', sans-serif; line-height: 1.9; white-space: pre-wrap; word-break: break-all; }
+
+        /* Page stage: the canvas holds the image and the column overlay at the
+           image's natural pixel size; zoom and pan are one CSS transform. */
+        #stage { touch-action: none; cursor: grab; background: #1e293b; }
+        #stage.dragging { cursor: grabbing; }
+        #canvas { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; }
+        #canvas.animate { transition: transform 280ms ease; }
+        #canvas img { display: block; max-width: none; user-select: none; -webkit-user-drag: none; }
+        #overlay { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+
+        .col { fill: transparent; stroke: transparent; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+        .show-columns .col { stroke: rgba(99, 102, 241, 0.55); }
+        .col.has-hit { stroke: rgba(245, 158, 11, 0.9); stroke-width: 2; }
+        .col.hover, .col.selected { fill: rgba(99, 102, 241, 0.14); stroke: rgb(79, 70, 229); stroke-width: 2.5; }
+        .col-label { fill: rgb(67, 56, 202); font-weight: 700; paint-order: stroke; stroke: white; stroke-width: 3px; display: none; pointer-events: none; }
+        .show-columns .col-label { display: block; }
+        .hit { fill: rgba(250, 204, 21, 0.35); stroke: rgb(217, 119, 6); stroke-width: 2; vector-effect: non-scaling-stroke; pointer-events: none; }
+        .hit.partial { fill: rgba(250, 204, 21, 0.18); stroke-dasharray: 6 4; }
+        .hit.current { fill: rgba(249, 115, 22, 0.35); stroke: rgb(234, 88, 12); stroke-width: 3.5; }
+
+        mark.hl { background: #fde68a; color: inherit; border-radius: 2px; padding: 0 1px; cursor: pointer; }
+        mark.hl.current { background: #fb923c; color: white; }
+        .col-item.hover { background: #eef2ff; }
+        .col-item.selected { background: #e0e7ff; box-shadow: inset 3px 0 0 #4f46e5; }
+        .thumb.current { outline: 3px solid #4f46e5; outline-offset: -3px; }
+        #tooltip { pointer-events: none; }
+        .tab.active { color: #4338ca; border-color: #4f46e5; }
+        kbd { font-family: ui-monospace, monospace; font-size: 11px; padding: 1px 5px; border: 1px solid #cbd5e1; border-bottom-width: 2px; border-radius: 4px; background: #f8fafc; color: #475569; }
     </style>
 </head>
-<body class="text-slate-800 antialiased">
+<body class="h-screen flex flex-col overflow-hidden bg-slate-100 text-slate-800 antialiased">
+{% if source %}
+    <script type="application/json" id="viewer-data">{{ viewer_data|tojson }}</script>
 
     <!-- Header -->
-    <header class="bg-indigo-600 text-white shadow-md">
-        <div class="container mx-auto px-6 py-4">
-            <div class="flex items-center gap-4 mb-2">
-                <a href="/" class="text-indigo-200 hover:text-white transition-colors">
-                    <svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
-                    </svg>
-                </a>
-                <h1 class="text-2xl font-bold tracking-tight truncate">{{ source.title if source and source.title else "Image Viewer" }}</h1>
+    <header class="bg-indigo-600 text-white shadow-md shrink-0 z-20">
+        <div class="px-4 py-2.5 flex items-center gap-3 flex-wrap">
+            <a href="/" class="text-indigo-200 hover:text-white" title="Back to sources">
+                <svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+            </a>
+            <div class="min-w-0 flex-1">
+                <h1 class="text-lg font-bold tracking-tight truncate">{{ source.title if source.title else source.url }}</h1>
+                <div class="text-indigo-200 text-xs flex gap-2 items-center">
+                    <span class="font-medium">{{ source.category }}</span>
+                    {% if source.category != 'Upload' %}<a href="{{ source.url }}" target="_blank" class="underline hover:text-white">Original source ↗</a>{% endif %}
+                </div>
             </div>
-            {% if source %}
-            <div class="text-indigo-200 text-sm">
-                <span class="font-medium">{{ source.category }}</span> •
-                <span class="text-xs">{{ image_count }} images</span>
+            <div class="flex items-center gap-1.5">
+                <button id="prev-page" class="p-1.5 rounded hover:bg-indigo-500 disabled:opacity-40" title="Previous page (←)">
+                    <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+                </button>
+                <span class="text-sm whitespace-nowrap">Page
+                    <input id="page-input" type="number" min="1" class="w-16 mx-1 px-1.5 py-0.5 rounded text-slate-800 text-sm text-center">
+                    of <span id="page-total"></span></span>
+                <button id="next-page" class="p-1.5 rounded hover:bg-indigo-500 disabled:opacity-40" title="Next page (→)">
+                    <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+                </button>
+                <button id="grid-toggle" class="ml-2 px-2.5 py-1 rounded bg-indigo-500 hover:bg-indigo-400 text-sm font-medium" title="All pages (G)">All pages</button>
             </div>
-            {% endif %}
         </div>
     </header>
 
-    <!-- Main Content -->
-    <main class="container mx-auto px-6 py-8">
-        {% if source %}
-        <div class="mb-6 flex justify-between items-center">
-            <div>
-                {# The title already headlines the page header above, so keep this generic #}
-                <h2 class="text-xl font-semibold text-slate-800 mb-1">Collection Images</h2>
-                <p class="text-sm text-slate-600">Viewing <span class="font-medium">{{ image_count }}</span> images from this collection</p>
-            </div>
-            {% if source.category != 'Upload' %}
-            <a href="{{ source.url }}" target="_blank" class="text-indigo-600 hover:text-indigo-800 text-sm font-medium underline">View Original Source →</a>
-            {% endif %}
-        </div>
+    <div class="flex-1 min-h-0 flex flex-col lg:flex-row relative">
+        <!-- Thumbnail rail -->
+        <nav id="thumbs" class="hidden lg:block w-24 shrink-0 overflow-y-auto bg-slate-200 border-r border-slate-300 p-1.5 space-y-1.5"></nav>
 
-        <!-- Infinite scroll container -->
-        <div id="gallery-container" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-            <!-- Images loaded via HTMX infinite scroll -->
-            <div hx-get="/api/images/{{ source.id }}?page={{ initial_page }}" 
-                 hx-trigger="load" 
-                 hx-target="#gallery-container" 
-                 hx-swap="innerHTML"
-                 class="col-span-full flex justify-center py-8">
-                <svg class="animate-spin h-8 w-8 text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
+        <!-- Page stage -->
+        <main id="stage" class="relative flex-1 min-h-[50vh] overflow-hidden select-none">
+            <div id="canvas">
+                <img id="page-img" alt="">
+                <svg id="overlay" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none"></svg>
             </div>
-        </div>
-        {% else %}
-        <div class="text-center py-12">
-            <svg class="mx-auto h-12 w-12 text-slate-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4v.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-            </svg>
-            <h2 class="text-lg font-semibold text-slate-700 mb-2">{{ error }}</h2>
-            <p class="text-sm text-slate-500 mb-4">The requested collection could not be found.</p>
-            <a href="/" class="inline-block text-indigo-600 hover:text-indigo-800 font-medium">← Go back to search</a>
-        </div>
-        {% endif %}
-    </main>
+            <div id="stage-loading" class="absolute inset-0 flex items-center justify-center text-slate-300 text-sm">Loading…</div>
+            <div id="stage-notice" class="hidden absolute top-3 left-3 right-3 sm:right-auto max-w-md bg-white/95 text-slate-700 text-xs rounded-md shadow px-3 py-2"></div>
+            <div id="tooltip" class="hidden absolute z-10 max-w-xs bg-slate-900/95 text-white text-sm rounded-md shadow-lg px-3 py-2 ocr-text"></div>
 
-    <!-- Viewer.js is initialized via JS -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/viewerjs/1.10.5/viewer.min.css" />
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/viewerjs/1.10.5/viewer.min.js"></script>
+            <!-- Zoom toolbar -->
+            <div class="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-white/95 rounded-full shadow-lg px-2 py-1 text-slate-700">
+                <button data-zoom="out" class="p-1.5 rounded-full hover:bg-slate-100" title="Zoom out (−)">
+                    <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-width="2" d="M20 12H4"></path></svg>
+                </button>
+                <span id="zoom-level" class="text-xs w-12 text-center tabular-nums"></span>
+                <button data-zoom="in" class="p-1.5 rounded-full hover:bg-slate-100" title="Zoom in (+)">
+                    <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                </button>
+                <button data-zoom="fit" class="px-2 py-1 rounded-full hover:bg-slate-100 text-xs font-medium" title="Fit page (0)">Fit</button>
+                <span class="w-px h-5 bg-slate-200 mx-1"></span>
+                <label class="flex items-center gap-1.5 text-xs font-medium px-1.5 cursor-pointer" title="Outline every text column TongGuOCR found (C)">
+                    <input id="show-columns" type="checkbox" class="rounded text-indigo-600"> Columns
+                </label>
+            </div>
+        </main>
+
+        <!-- Text panel -->
+        <section class="w-full lg:w-[420px] xl:w-[480px] shrink-0 bg-white border-l border-slate-200 flex flex-col min-h-0 max-h-[50vh] lg:max-h-none">
+            <!-- Find on page -->
+            <div class="p-3 border-b border-slate-200 space-y-2">
+                <form id="find-form" class="flex gap-2">
+                    <input id="find-input" type="search" placeholder="Find on page (e.g. 張三)…" class="flex-1 min-w-0 px-3 py-1.5 border border-slate-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    <button class="px-3 py-1.5 bg-indigo-600 text-white rounded-md text-sm font-medium hover:bg-indigo-700">Find</button>
+                </form>
+                <div class="flex items-center gap-2 text-xs text-slate-600">
+                    <label class="flex items-center gap-1 cursor-pointer"><input id="find-fuzzy" type="checkbox" class="rounded text-indigo-600"> OCR look-alikes</label>
+                    <span class="flex-1"></span>
+                    <span id="hit-count"></span>
+                    <button id="prev-hit" class="p-1 rounded hover:bg-slate-100 disabled:opacity-30" title="Previous match (Shift+N)">
+                        <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-width="2" d="M5 15l7-7 7 7"></path></svg>
+                    </button>
+                    <button id="next-hit" class="p-1 rounded hover:bg-slate-100 disabled:opacity-30" title="Next match (N)">
+                        <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                    </button>
+                </div>
+                <div id="hit-list" class="hidden max-h-32 overflow-y-auto space-y-1"></div>
+            </div>
+
+            <!-- Tabs -->
+            <div class="flex border-b border-slate-200 text-sm font-medium text-slate-500 px-2">
+                <button class="tab px-3 py-2 border-b-2 border-transparent hover:text-slate-800" data-tab="columns">By column</button>
+                <button class="tab px-3 py-2 border-b-2 border-transparent hover:text-slate-800" data-tab="tongguocr">TongGuOCR</button>
+                <button class="tab px-3 py-2 border-b-2 border-transparent hover:text-slate-800" data-tab="hunyuan">HunyuanOCR</button>
+            </div>
+            <div id="tab-body" class="flex-1 min-h-0 overflow-y-auto p-3 text-[15px]"></div>
+            <div class="hidden lg:flex px-3 py-2 border-t border-slate-200 text-[11px] text-slate-500 gap-x-3 gap-y-1 flex-wrap">
+                <span><kbd>←</kbd> <kbd>→</kbd> pages</span><span><kbd>N</kbd> next match</span><span><kbd>+</kbd> <kbd>−</kbd> <kbd>0</kbd> zoom</span><span><kbd>C</kbd> columns</span><span>drag to pan · scroll to zoom</span>
+            </div>
+        </section>
+
+        <!-- All-pages grid -->
+        <div id="grid" class="hidden absolute inset-0 z-10 bg-slate-100 overflow-y-auto p-4">
+            <div id="grid-items" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-3"></div>
+        </div>
+    </div>
+
     <script>
-        (function() {
-            if (window.jiapuViewerScriptLoaded) {
+    (function () {
+        const data = JSON.parse(document.getElementById('viewer-data').textContent);
+        const pages = data.pages;
+        const $ = (id) => document.getElementById(id);
+        const SVG_NS = 'http://www.w3.org/2000/svg';
+
+        const state = {
+            index: 0,
+            page: null,             // /api/pages payload for the current page
+            columns: [],            // layout columns in reading order, with .n (1-based label)
+            query: data.query || '',
+            fuzzy: !!data.fuzzy,
+            variants: data.variants || [],
+            hits: [],               // located matches on the image
+            hitIndex: -1,
+            tab: null,
+            selected: -1,           // selected column index into state.columns
+            view: { s: 1, x: 0, y: 0, fit: 1 },
+            pendingZoomToHit: false,
+        };
+        const pageCache = new Map();
+
+        // ---------- Page list, thumbnails, grid ----------
+        $('page-total').textContent = pages.length;
+        $('page-input').max = pages.length;
+
+        function makeThumb(page, i, extraClass) {
+            const a = document.createElement('button');
+            a.className = 'thumb block w-full bg-white rounded overflow-hidden shadow-sm hover:ring-2 hover:ring-indigo-300 ' + extraClass;
+            a.dataset.index = i;
+            const img = document.createElement('img');
+            img.loading = 'lazy';
+            img.src = page.image_url;
+            img.alt = `Page ${i + 1}`;
+            img.className = 'w-full aspect-[3/4] object-cover bg-slate-300';
+            const label = document.createElement('div');
+            label.className = 'text-[11px] text-slate-500 py-0.5 text-center';
+            label.textContent = i + 1;
+            a.append(img, label);
+            a.addEventListener('click', () => { hideGrid(); goTo(i); });
+            return a;
+        }
+        pages.forEach((p, i) => {
+            $('thumbs').appendChild(makeThumb(p, i, ''));
+            $('grid-items').appendChild(makeThumb(p, i, ''));
+        });
+
+        function showGrid() {
+            $('grid').classList.remove('hidden');
+            const current = $('grid-items').children[state.index];
+            if (current) current.scrollIntoView({ block: 'center' });
+        }
+        function hideGrid() { $('grid').classList.add('hidden'); }
+        $('grid-toggle').addEventListener('click', () => $('grid').classList.contains('hidden') ? showGrid() : hideGrid());
+
+        // ---------- Navigation ----------
+        async function fetchPage(id) {
+            if (!pageCache.has(id)) {
+                pageCache.set(id, fetch(`/api/pages/${id}`).then((r) => {
+                    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                    return r.json();
+                }).catch((err) => { pageCache.delete(id); throw err; }));
+            }
+            return pageCache.get(id);
+        }
+
+        async function goTo(i, { zoomToHit = false } = {}) {
+            if (!pages.length) return;
+            i = Math.max(0, Math.min(pages.length - 1, i));
+            state.index = i;
+            state.selected = -1;
+            state.pendingZoomToHit = zoomToHit || !!state.variants.length;
+            $('page-input').value = i + 1;
+            $('prev-page').disabled = i === 0;
+            $('next-page').disabled = i === pages.length - 1;
+            document.querySelectorAll('#thumbs .thumb').forEach((t, k) => t.classList.toggle('current', k === i));
+            document.querySelectorAll('#grid-items .thumb').forEach((t, k) => t.classList.toggle('current', k === i));
+            const thumb = $('thumbs').children[i];
+            if (thumb) thumb.scrollIntoView({ block: 'nearest' });
+            updateUrl();
+
+            $('stage-loading').classList.remove('hidden');
+            $('stage-loading').textContent = 'Loading…';
+            let page;
+            try {
+                page = await fetchPage(pages[i].id);
+            } catch (err) {
+                $('stage-loading').textContent = `Could not load page: ${err.message}`;
                 return;
             }
-            window.jiapuViewerScriptLoaded = true;
+            if (state.index !== i) return; // navigated away while loading
+            state.page = page;
+            state.columns = orderColumns(page.layout);
+            state.charStep = pageCharStep(state.columns);
+            loadImage(page.image_url);
+            // Warm the cache for the neighbours.
+            [i - 1, i + 1].forEach((k) => { if (pages[k]) fetchPage(pages[k].id).catch(() => {}); });
+        }
 
-            const focusImageId = {{ focus_image_id if focus_image_id is not none else 'null' }};
-            let viewer = null;
-            let focusHandled = false;
+        function updateUrl() {
+            const params = new URLSearchParams();
+            params.set('focus_image_id', pages[state.index].id);
+            if (state.query) params.set('q', state.query);
+            if (state.fuzzy) params.set('fuzzy', 'true');
+            history.replaceState(null, '', `${location.pathname}?${params}`);
+        }
 
-            function getGalleryImages() {
-                return Array.from(document.querySelectorAll('#gallery-container img[data-image-id]'));
+        $('prev-page').addEventListener('click', () => goTo(state.index - 1));
+        $('next-page').addEventListener('click', () => goTo(state.index + 1));
+        $('page-input').addEventListener('change', (e) => goTo(parseInt(e.target.value, 10) - 1));
+
+        // ---------- Image + zoom/pan ----------
+        const stage = $('stage'), canvas = $('canvas'), img = $('page-img'), overlay = $('overlay');
+
+        function loadImage(url) {
+            img.onload = () => {
+                $('stage-loading').classList.add('hidden');
+                canvas.style.width = img.naturalWidth + 'px';
+                canvas.style.height = img.naturalHeight + 'px';
+                renderOverlay();
+                fitPage(false);
+                computeHits();
+            };
+            img.onerror = () => {
+                $('stage-loading').classList.remove('hidden');
+                $('stage-loading').textContent = 'Image not found';
+                overlay.innerHTML = '';
+                computeHits();
+            };
+            if (img.src !== new URL(url, location.href).href) {
+                img.src = url;
+            } else if (img.complete && img.naturalWidth) {
+                img.onload();
             }
+        }
 
-            function getImageIndex(imageElement) {
-                return getGalleryImages().indexOf(imageElement);
+        function applyView(animate) {
+            canvas.classList.toggle('animate', !!animate);
+            const { s, x, y } = state.view;
+            canvas.style.transform = `translate(${x}px, ${y}px) scale(${s})`;
+            $('zoom-level').textContent = Math.round(s * 100) + '%';
+        }
+
+        function fitPage(animate = true) {
+            if (!img.naturalWidth) return;
+            const sw = stage.clientWidth, sh = stage.clientHeight;
+            const s = Math.min(sw / img.naturalWidth, sh / img.naturalHeight) * 0.96;
+            state.view = { s, fit: s, x: (sw - img.naturalWidth * s) / 2, y: (sh - img.naturalHeight * s) / 2, mode: 'fit' };
+            applyView(animate);
+        }
+
+        function clampScale(s) {
+            const fit = state.view.fit || 1;
+            return Math.max(fit * 0.5, Math.min(fit * 12, s));
+        }
+
+        function zoomAt(factor, px, py, animate) {
+            const v = state.view;
+            const s = clampScale(v.s * factor);
+            v.x = px - (px - v.x) * (s / v.s);
+            v.y = py - (py - v.y) * (s / v.s);
+            v.s = s;
+            v.mode = 'free';
+            applyView(animate);
+        }
+
+        // Zoom so an image-pixel rect is comfortably visible and centered.
+        function zoomToRect(r, { padding = 0.35 } = {}) {
+            const sw = stage.clientWidth, sh = stage.clientHeight;
+            const scaleImg = imageScale();
+            const w = Math.max(r.w * scaleImg.x, 1), h = Math.max(r.h * scaleImg.y, 1);
+            let s = Math.min(sw * (1 - padding) / w, sh * (1 - padding) / h);
+            s = clampScale(Math.min(s, (state.view.fit || 1) * 5));
+            const cx = (r.x + r.w / 2) * scaleImg.x, cy = (r.y + r.h / 2) * scaleImg.y;
+            state.view.s = s;
+            state.view.x = sw / 2 - cx * s;
+            state.view.y = sh / 2 - cy * s;
+            state.view.mode = 'free';
+            applyView(true);
+        }
+
+        // Layout coordinates come from the image TongGuOCR read; scale them in
+        // case the served image differs in size.
+        function imageScale() {
+            const size = state.page && state.page.layout && state.page.layout.image_size;
+            if (!size || !img.naturalWidth) return { x: 1, y: 1 };
+            return { x: img.naturalWidth / size[0], y: img.naturalHeight / size[1] };
+        }
+
+        stage.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const rect = stage.getBoundingClientRect();
+            zoomAt(Math.exp(-e.deltaY * 0.0015), e.clientX - rect.left, e.clientY - rect.top, false);
+        }, { passive: false });
+
+        let drag = null;
+        stage.addEventListener('pointerdown', (e) => {
+            if (e.button !== 0 || e.target.closest('button, input, label')) return;
+            drag = { x: e.clientX, y: e.clientY, vx: state.view.x, vy: state.view.y, moved: false };
+            stage.setPointerCapture(e.pointerId);
+        });
+        stage.addEventListener('pointermove', (e) => {
+            if (drag) {
+                const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+                if (Math.abs(dx) + Math.abs(dy) > 3) { drag.moved = true; stage.classList.add('dragging'); hideTooltip(); }
+                if (drag.moved) {
+                    state.view.x = drag.vx + dx;
+                    state.view.y = drag.vy + dy;
+                    state.view.mode = 'free';
+                    applyView(false);
+                }
+                return;
             }
-
-            function viewImage(imageElement) {
-                if (!imageElement) return;
-
-                // Make sure images added by infinite scroll are known to the viewer.
-                syncViewer();
-                if (!viewer) return;
-
-                const imageIndex = getImageIndex(imageElement);
-                if (imageIndex < 0) return;
-
-                viewer.view(imageIndex);
+            hoverAt(e);
+        });
+        stage.addEventListener('pointerup', (e) => {
+            const wasClick = drag && !drag.moved;
+            drag = null;
+            stage.classList.remove('dragging');
+            if (wasClick) {
+                const col = columnAt(e);
+                selectColumn(col, { scrollList: true });
             }
+        });
+        stage.addEventListener('pointerleave', () => { hideTooltip(); setHover(-1); });
+        stage.addEventListener('dblclick', (e) => {
+            const rect = stage.getBoundingClientRect();
+            zoomAt(2, e.clientX - rect.left, e.clientY - rect.top, true);
+        });
+        document.querySelectorAll('[data-zoom]').forEach((b) => b.addEventListener('click', () => {
+            const z = b.dataset.zoom;
+            if (z === 'fit') return fitPage();
+            zoomAt(z === 'in' ? 1.5 : 1 / 1.5, stage.clientWidth / 2, stage.clientHeight / 2, true);
+        }));
+        // Keep a fitted page fitted as the window or panels resize; leave a
+        // zoomed-in view where the reader put it.
+        new ResizeObserver(() => { if (img.naturalWidth && state.view.mode !== 'free') fitPage(false); }).observe(stage);
 
-            // Viewer.js snapshots the image list when it is constructed and does not
-            // watch for DOM changes, so every batch of lazily loaded images has to be
-            // pushed into the existing instance with update().
-            function syncViewer() {
-                if (viewer) {
-                    viewer.update();
+        // ---------- Columns ----------
+        // Reading a lone column, the model sometimes gets stuck repeating a
+        // character or pair ("三三三…", "二〇二〇…") until its length cap.
+        // That junk would make the column look longer than it is and pull
+        // every match position toward the top, so cut it off.
+        function cleanColumnText(text) {
+            const lines = (text || '').split('\n').map((line) => line.replace(/(.)\1{3,}.*$/u, '').replace(/(..)\1{3,}.*$/u, ''));
+            return lines.filter((line) => {
+                const chars = [...line];
+                if (chars.length < 6) return true;
+                const counts = {};
+                let top = 0;
+                for (const ch of chars) top = Math.max(top, counts[ch] = (counts[ch] || 0) + 1);
+                return top / chars.length < 0.4;
+            }).filter((line, i, all) => all.indexOf(line) === i).join('\n').trim();
+        }
+
+        // TongGuOCR lists columns by position, not reading order. Group them
+        // into horizontal bands (columns that overlap vertically), read bands top
+        // to bottom and each band right to left, as a printed jiapu page reads.
+        function orderColumns(layout) {
+            if (!layout || !layout.columns) return [];
+            const cols = layout.columns.map((c, i) => {
+                const [x1, y1, x2, y2] = c.bbox;
+                const lines = cleanColumnText(c.text).split('\n').filter((l) => l.trim());
+                return { i, lines, x: x1, y: y1, w: x2 - x1, h: y2 - y1, vertical: (y2 - y1) >= (x2 - x1) };
+            });
+            resolveOverlaps(cols);
+            cols.forEach((c) => {
+                c.text = c.lines.join('\n');
+                // With several lines left, the longest is the box's own
+                // column; the rest are headings or a neighbouring column.
+                c.primary = c.lines.reduce((best, line, li) => (line.length > c.lines[best].length ? li : best), 0);
+                c.ambiguous = c.lines.length > 1;
+            });
+            const sorted = [...cols].sort((a, b) => a.y - b.y);
+            const bands = [];
+            for (const c of sorted) {
+                const band = bands.find((b) => {
+                    const overlap = Math.min(b.bottom, c.y + c.h) - Math.max(b.top, c.y);
+                    return overlap > 0.5 * Math.min(c.h, b.bottom - b.top);
+                });
+                if (band) {
+                    band.items.push(c);
+                    band.top = Math.min(band.top, c.y);
+                    band.bottom = Math.max(band.bottom, c.y + c.h);
+                } else {
+                    bands.push({ top: c.y, bottom: c.y + c.h, items: [c] });
+                }
+            }
+            bands.sort((a, b) => a.top - b.top);
+            const ordered = [];
+            for (const band of bands) {
+                band.items.sort((a, b) => (a.vertical && b.vertical) ? (b.x + b.w / 2) - (a.x + a.w / 2) : a.y - b.y);
+                ordered.push(...band.items);
+            }
+            ordered.forEach((c, k) => { c.n = k + 1; });
+            return ordered;
+        }
+
+        // The detector sometimes returns one big box over several printed
+        // columns as well as a smaller box for one of them, and both get read.
+        // Where a line of the big box repeats what a smaller box inside it
+        // read, drop that line from the big box and, if the smaller box sits
+        // at one end, trim the big box to the part that's left.
+        function resolveOverlaps(cols) {
+            const area = (c) => c.w * c.h;
+            const overlap = (a, b) => {
+                const w = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+                const h = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+                return w > 0 && h > 0 ? w * h : 0;
+            };
+            // Two readings of the same printed line: compare characters only
+            // (one reading may have punctuation the other lacks) and allow a
+            // few misread characters.
+            const similar = (s, t) => {
+                const a = [...s.replace(/[\p{P}\p{S}\s]/gu, '')], b = [...t.replace(/[\p{P}\p{S}\s]/gu, '')];
+                const n = Math.min(a.length, b.length);
+                if (n < 2) return false;
+                const counts = new Map();
+                for (const ch of a) counts.set(ch, (counts.get(ch) || 0) + 1);
+                let common = 0;
+                for (const ch of b) if (counts.get(ch) > 0) { common++; counts.set(ch, counts.get(ch) - 1); }
+                return common >= n * 0.7;
+            };
+            for (const big of cols) {
+                for (const small of cols) {
+                    if (small === big || !small.lines.length) continue;
+                    const smaller = area(small) < area(big) || (area(small) === area(big) && small.i < big.i);
+                    if (!smaller || overlap(big, small) < 0.3 * area(small)) continue;
+                    const before = big.lines.length;
+                    big.lines = big.lines.filter((line) => !small.lines.some((s) => similar(line, s)));
+                    if (big.lines.length === before || !big.lines.length) continue;
+                    // Trim along the reading axis when the smaller box is at one end.
+                    const [pos, len, sPos, sLen] = big.vertical ? ['y', 'h', small.y, small.h] : ['x', 'w', small.x, small.w];
+                    const start = big[pos], end = big[pos] + big[len], tol = big[len] * 0.08;
+                    let newStart = start, newEnd = end;
+                    if (sPos <= start + tol) newStart = Math.max(start, sPos + sLen);
+                    else if (sPos + sLen >= end - tol) newEnd = Math.min(end, sPos);
+                    if (newEnd - newStart >= big[len] * 0.2) {
+                        big[pos] = newStart;
+                        big[len] = newEnd - newStart;
+                    }
+                }
+            }
+        }
+
+        function renderOverlay() {
+            overlay.innerHTML = '';
+            const size = state.page && state.page.layout && state.page.layout.image_size;
+            const w = size ? size[0] : img.naturalWidth, h = size ? size[1] : img.naturalHeight;
+            overlay.setAttribute('viewBox', `0 0 ${w} ${h}`);
+            const fontSize = Math.max(14, Math.round(Math.min(w, h) / 60));
+            state.columns.forEach((c, k) => {
+                const r = document.createElementNS(SVG_NS, 'rect');
+                r.setAttribute('x', c.x); r.setAttribute('y', c.y);
+                r.setAttribute('width', c.w); r.setAttribute('height', c.h);
+                r.setAttribute('class', 'col');
+                r.dataset.k = k;
+                overlay.appendChild(r);
+                const t = document.createElementNS(SVG_NS, 'text');
+                t.setAttribute('x', c.x + c.w / 2); t.setAttribute('y', c.y - fontSize * 0.3);
+                t.setAttribute('text-anchor', 'middle');
+                t.setAttribute('font-size', fontSize);
+                t.setAttribute('class', 'col-label');
+                t.textContent = c.n;
+                overlay.appendChild(t);
+            });
+            const hitLayer = document.createElementNS(SVG_NS, 'g');
+            hitLayer.id = 'hit-layer';
+            overlay.appendChild(hitLayer);
+            overlay.classList.toggle('show-columns', $('show-columns').checked);
+            canvas.classList.toggle('show-columns', $('show-columns').checked);
+            showNotice();
+        }
+
+        function showNotice() {
+            const notice = $('stage-notice');
+            const page = state.page;
+            let msg = '';
+            if (page && !page.layout) {
+                msg = page.tongguocr_text == null
+                    ? 'This page hasn’t been through TongGuOCR yet, so matches can’t be placed on the image. The re-index will add it.'
+                    : 'Column positions for this page haven’t been added yet (the TongGuOCR re-index adds them), so matches are only highlighted in the text.';
+            } else if (page && state.variants.length && !state.hits.length && textHasMatch()) {
+                msg = 'The search matched this page’s text, but no column read the same characters, so it can’t be pinned on the image. Check the highlighted text on the right.';
+            }
+            notice.textContent = msg;
+            notice.classList.toggle('hidden', !msg);
+        }
+
+        $('show-columns').addEventListener('change', (e) => {
+            canvas.classList.toggle('show-columns', e.target.checked);
+            overlay.classList.toggle('show-columns', e.target.checked);
+            try { localStorage.setItem('viewer.showColumns', e.target.checked ? '1' : '0'); } catch (_) {}
+        });
+        try { $('show-columns').checked = localStorage.getItem('viewer.showColumns') === '1'; } catch (_) {}
+
+        function columnAt(e) {
+            const el = document.elementsFromPoint(e.clientX, e.clientY).find((n) => n.classList && n.classList.contains('col'));
+            return el ? parseInt(el.dataset.k, 10) : -1;
+        }
+
+        let hovered = -1;
+        function setHover(k) {
+            if (k === hovered) return;
+            if (hovered >= 0) {
+                overlay.querySelector(`.col[data-k="${hovered}"]`)?.classList.remove('hover');
+                $('tab-body').querySelector(`.col-item[data-k="${hovered}"]`)?.classList.remove('hover');
+            }
+            hovered = k;
+            if (k >= 0) {
+                overlay.querySelector(`.col[data-k="${k}"]`)?.classList.add('hover');
+                $('tab-body').querySelector(`.col-item[data-k="${k}"]`)?.classList.add('hover');
+            }
+        }
+
+        function hoverAt(e) {
+            const k = columnAt(e);
+            setHover(k);
+            if (k < 0) return hideTooltip();
+            const tip = $('tooltip');
+            const col = state.columns[k];
+            tip.innerHTML = '';
+            const head = document.createElement('div');
+            head.className = 'text-[11px] text-slate-400 mb-1';
+            head.textContent = `Column ${col.n} · TongGuOCR read`;
+            const body = document.createElement('div');
+            body.append(...highlightNodes(col.text.replace(/\n/g, ''), state.variants));
+            if (!col.text) body.textContent = '(nothing read)';
+            tip.append(head, body);
+            tip.classList.remove('hidden');
+            const rect = stage.getBoundingClientRect();
+            let x = e.clientX - rect.left + 16, y = e.clientY - rect.top + 16;
+            if (x + tip.offsetWidth > rect.width - 8) x = e.clientX - rect.left - tip.offsetWidth - 16;
+            if (y + tip.offsetHeight > rect.height - 8) y = rect.height - tip.offsetHeight - 8;
+            tip.style.left = Math.max(8, x) + 'px';
+            tip.style.top = Math.max(8, y) + 'px';
+        }
+        function hideTooltip() { $('tooltip').classList.add('hidden'); }
+
+        function selectColumn(k, { zoom = false, scrollList = false } = {}) {
+            overlay.querySelectorAll('.col.selected').forEach((n) => n.classList.remove('selected'));
+            $('tab-body').querySelectorAll('.col-item.selected').forEach((n) => n.classList.remove('selected'));
+            state.selected = k;
+            if (k < 0) return;
+            overlay.querySelector(`.col[data-k="${k}"]`)?.classList.add('selected');
+            if (scrollList && state.tab !== 'columns') setTab('columns');
+            const item = $('tab-body').querySelector(`.col-item[data-k="${k}"]`);
+            if (item) {
+                item.classList.add('selected');
+                if (scrollList) item.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            }
+            if (zoom) {
+                const c = state.columns[k];
+                zoomToRect({ x: c.x, y: c.y, w: c.w, h: c.h }, { padding: 0.15 });
+            }
+        }
+
+        // ---------- Matching ----------
+        // All [start, end) ranges where any variant occurs in text, merged.
+        function findRanges(text, variants) {
+            const ranges = [];
+            if (!text) return ranges;
+            for (const v of variants) {
+                if (!v) continue;
+                let from = 0, at;
+                while ((at = text.indexOf(v, from)) !== -1) {
+                    ranges.push([at, at + v.length]);
+                    from = at + 1;
+                }
+            }
+            ranges.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
+            const merged = [];
+            for (const r of ranges) {
+                const last = merged[merged.length - 1];
+                if (last && r[0] <= last[1]) last[1] = Math.max(last[1], r[1]);
+                else merged.push([...r]);
+            }
+            return merged;
+        }
+
+        function highlightNodes(text, variants, onMarkClick) {
+            const nodes = [];
+            let pos = 0;
+            for (const [a, b] of findRanges(text, variants)) {
+                if (a > pos) nodes.push(document.createTextNode(text.slice(pos, a)));
+                const m = document.createElement('mark');
+                m.className = 'hl';
+                m.textContent = text.slice(a, b);
+                if (onMarkClick) m.addEventListener('click', () => onMarkClick(m.textContent));
+                nodes.push(m);
+                pos = b;
+            }
+            if (pos < text.length) nodes.push(document.createTextNode(text.slice(pos)));
+            return nodes;
+        }
+
+        function longestCommonSubstring(a, b) {
+            let best = { len: 0, at: 0 };
+            const prev = new Array(b.length + 1).fill(0);
+            for (let i = 1; i <= a.length; i++) {
+                let diag = 0;
+                for (let j = 1; j <= b.length; j++) {
+                    const tmp = prev[j];
+                    prev[j] = a[i - 1] === b[j - 1] ? diag + 1 : 0;
+                    if (prev[j] > best.len) best = { len: prev[j], at: i - prev[j] };
+                    diag = tmp;
+                }
+            }
+            return best;
+        }
+
+        function textHasMatch() {
+            const p = state.page;
+            return !!p && state.variants.some((v) => v && ((p.hunyuan_text || '').includes(v) || (p.tongguocr_text || '').includes(v)));
+        }
+
+        // Pin matches to the image. A column's characters sit evenly along its
+        // long side, so a match's offset in the column's main line gives its
+        // span. Matches in a box's other lines (a heading, or a neighbouring
+        // column caught in a wide box) can only be placed in the box as a whole.
+        function lineHit(c, k, li, a, b, partial) {
+            const line = c.lines[li];
+            return { k, a, b, len: line.length, line, text: line.slice(a, b), partial, whole: li !== c.primary };
+        }
+
+        function computeHits() {
+            state.hits = [];
+            state.hitIndex = -1;
+            const variants = state.variants;
+            if (variants.length && state.columns.length) {
+                state.columns.forEach((c, k) => {
+                    c.lines.forEach((line, li) => {
+                        for (const [a, b] of findRanges(line, variants)) state.hits.push(lineHit(c, k, li, a, b, false));
+                    });
+                });
+                // A whole-box hit adds nothing when the same text was already
+                // placed precisely in another column.
+                const precise = new Set(state.hits.filter((h) => !h.whole).map((h) => h.text));
+                state.hits = state.hits.filter((h) => !h.whole || !precise.has(h.text));
+                // No exact match anywhere (the column misread a character):
+                // first try the same length with one character different (two
+                // for longer queries), the usual OCR slip...
+                if (!state.hits.length) {
+                    const base = variants.slice(0, 3);
+                    const q = [...state.query];
+                    const allowed = q.length >= 6 ? 2 : q.length >= 3 ? 1 : 0;
+                    if (allowed) {
+                        state.columns.forEach((c, k) => {
+                            c.lines.forEach((line, li) => {
+                                for (const v of base) {
+                                    const vc = [...v];
+                                    for (let at = 0; at + vc.length <= line.length; at++) {
+                                        let misses = 0;
+                                        for (let j = 0; j < vc.length && misses <= allowed; j++) if (line[at + j] !== vc[j]) misses++;
+                                        if (misses <= allowed) { state.hits.push(lineHit(c, k, li, at, at + vc.length, true)); return; }
+                                    }
+                                }
+                            });
+                        });
+                    }
+                }
+                // ...then the column sharing the longest run of characters.
+                if (!state.hits.length) {
+                    const base = variants.slice(0, 3);
+                    const need = Math.max(2, Math.ceil(state.query.length * 0.6));
+                    let best = null;
+                    state.columns.forEach((c, k) => {
+                        c.lines.forEach((line, li) => {
+                            for (const v of base) {
+                                const lcs = longestCommonSubstring(line, v);
+                                if (lcs.len >= need && (!best || lcs.len > best.b - best.a)) {
+                                    best = lineHit(c, k, li, lcs.at, lcs.at + lcs.len, true);
+                                }
+                            }
+                        });
+                    });
+                    if (best) state.hits.push(best);
+                }
+            }
+            const seen = new Set();
+            state.hits = state.hits.filter((h) => {
+                const key = `${h.k}:${h.text}:${h.whole ? 'w' : h.a}`;
+                return !seen.has(key) && seen.add(key);
+            });
+            state.hits.forEach((h) => { h.rect = hitRect(h); });
+            renderHits();
+            renderHitList();
+            renderTab();
+            showNotice();
+            if (state.pendingZoomToHit && state.hits.length) {
+                state.pendingZoomToHit = false;
+                gotoHit(0);
+            }
+        }
+
+        function hitRect(h) {
+            const c = state.columns[h.k];
+            if (h.whole) return { x: c.x, y: c.y, w: c.w, h: c.h };
+            const n = Math.max(h.len, 1);
+            const long = c.vertical ? c.h : c.w;
+            // Normally the text fills its box, so characters are spread evenly
+            // along it. A box with far fewer characters than its length
+            // suggests has blank space after the text (a short last line, a
+            // box running past a divider): place characters at the page's
+            // usual spacing from the top instead of stretching them.
+            let step = long / n;
+            if (state.charStep && step > state.charStep * 1.3) step = state.charStep;
+            // Pad by half a character so the box covers the glyphs, not just
+            // their estimated centers.
+            const start = Math.max(0, (h.a - 0.5) * step), end = Math.min(long, (h.b + 0.5) * step);
+            if (c.vertical) return { x: c.x, y: c.y + start, w: c.w, h: end - start };
+            return { x: c.x + start, y: c.y, w: end - start, h: c.h };
+        }
+
+        // Typical distance between characters on this page: the median over
+        // columns that were read cleanly and have enough text to measure.
+        function pageCharStep(columns) {
+            const steps = columns
+                .filter((c) => c.lines.length && c.lines[c.primary].length >= 8)
+                .map((c) => (c.vertical ? c.h : c.w) / c.lines[c.primary].length)
+                .sort((a, b) => a - b);
+            return steps.length >= 3 ? steps[Math.floor(steps.length / 2)] : null;
+        }
+
+        function renderHits() {
+            const layer = $('hit-layer');
+            overlay.querySelectorAll('.col.has-hit').forEach((n) => n.classList.remove('has-hit'));
+            if (!layer) return;
+            layer.innerHTML = '';
+            state.hits.forEach((h, idx) => {
+                overlay.querySelector(`.col[data-k="${h.k}"]`)?.classList.add('has-hit');
+                const r = document.createElementNS(SVG_NS, 'rect');
+                r.setAttribute('x', h.rect.x); r.setAttribute('y', h.rect.y);
+                r.setAttribute('width', h.rect.w); r.setAttribute('height', h.rect.h);
+                r.setAttribute('rx', Math.min(h.rect.w, h.rect.h) * 0.12);
+                r.setAttribute('class', 'hit' + (h.partial ? ' partial' : '') + (idx === state.hitIndex ? ' current' : ''));
+                layer.appendChild(r);
+            });
+            const total = state.hits.length;
+            $('hit-count').textContent = state.variants.length
+                ? (total ? `${state.hitIndex >= 0 ? state.hitIndex + 1 : '–'} of ${total} on image` + (state.hits.some((h) => h.partial) ? ' (closest)' : '') : 'Not placed on image')
+                : '';
+            $('prev-hit').disabled = $('next-hit').disabled = total === 0;
+        }
+
+        function renderHitList() {
+            const list = $('hit-list');
+            list.innerHTML = '';
+            list.classList.toggle('hidden', state.hits.length === 0);
+            state.hits.forEach((h, idx) => {
+                const c = state.columns[h.k];
+                const flat = h.line;
+                const b = document.createElement('button');
+                b.className = 'w-full text-left text-xs px-2 py-1 rounded border ' + (idx === state.hitIndex ? 'border-orange-400 bg-orange-50' : 'border-slate-200 hover:bg-slate-50');
+                const label = document.createElement('span');
+                label.className = 'font-semibold text-slate-500 mr-1.5';
+                label.textContent = `Col ${c.n}${h.partial ? ' · closest' : ''}${h.whole ? ' · somewhere in column' : ''}`;
+                const ctx = document.createElement('span');
+                ctx.className = 'ocr-text';
+                ctx.append(document.createTextNode((h.a > 6 ? '…' : '') + flat.slice(Math.max(0, h.a - 6), h.a)));
+                const m = document.createElement('mark'); m.className = 'hl'; m.textContent = flat.slice(h.a, h.b);
+                ctx.append(m, document.createTextNode(flat.slice(h.b, h.b + 6) + (h.b + 6 < flat.length ? '…' : '')));
+                b.append(label, ctx);
+                b.addEventListener('click', () => gotoHit(idx));
+                list.appendChild(b);
+            });
+        }
+
+        function gotoHit(idx) {
+            if (!state.hits.length) return;
+            state.hitIndex = (idx + state.hits.length) % state.hits.length;
+            const h = state.hits[state.hitIndex];
+            renderHits();
+            renderHitList();
+            selectColumn(h.k, { scrollList: state.tab === 'columns' });
+            // Show the whole match with context: at least a few characters' height.
+            const c = state.columns[h.k];
+            const charStep = (c.vertical ? c.h : c.w) / Math.max(h.len, 1);
+            const r = { ...h.rect };
+            if (h.whole) { zoomToRect(r, { padding: 0.15 }); $('hit-list').children[state.hitIndex]?.scrollIntoView({ block: 'nearest' }); return; }
+            if (c.vertical) { const extra = charStep * 4; r.y -= extra; r.h += extra * 2; }
+            else { const extra = charStep * 4; r.x -= extra; r.w += extra * 2; }
+            zoomToRect(r, { padding: 0.45 });
+            $('hit-list').children[state.hitIndex]?.scrollIntoView({ block: 'nearest' });
+        }
+        $('next-hit').addEventListener('click', () => gotoHit(state.hitIndex + 1));
+        $('prev-hit').addEventListener('click', () => gotoHit(state.hitIndex - 1));
+
+        // Clicking a highlight in the full-page texts jumps to where that
+        // string sits on the image, if a column read it.
+        function locateString(s) {
+            const idx = state.hits.findIndex((h) => h.text === s);
+            if (idx >= 0) return gotoHit(idx);
+            if (state.hits.length) return gotoHit(0);
+        }
+
+        // ---------- Find ----------
+        async function setQuery(q, fuzzy) {
+            state.query = q.trim();
+            state.fuzzy = fuzzy;
+            if (!state.query) {
+                state.variants = [];
+            } else {
+                try {
+                    const r = await fetch(`/api/variants?q=${encodeURIComponent(state.query)}${fuzzy ? '&fuzzy=true' : ''}`);
+                    state.variants = (await r.json()).variants;
+                } catch (_) {
+                    state.variants = [state.query];
+                }
+            }
+            updateUrl();
+            state.pendingZoomToHit = true;
+            computeHits();
+            if (!state.hits.length) fitPage();
+        }
+        $('find-input').value = state.query;
+        $('find-fuzzy').checked = state.fuzzy;
+        $('find-form').addEventListener('submit', (e) => { e.preventDefault(); setQuery($('find-input').value, $('find-fuzzy').checked); });
+        $('find-fuzzy').addEventListener('change', () => { if ($('find-input').value.trim()) setQuery($('find-input').value, $('find-fuzzy').checked); });
+        $('find-input').addEventListener('search', () => { if (!$('find-input').value) setQuery('', state.fuzzy); });
+
+        // ---------- Text tabs ----------
+        function setTab(tab) {
+            state.tab = tab;
+            document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === tab));
+            try { localStorage.setItem('viewer.tab', tab); } catch (_) {}
+            renderTab();
+        }
+        document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => setTab(t.dataset.tab)));
+
+        function emptyNote(text) {
+            const p = document.createElement('p');
+            p.className = 'text-sm text-slate-500 italic';
+            p.textContent = text;
+            return p;
+        }
+
+        function renderTab() {
+            const body = $('tab-body');
+            body.innerHTML = '';
+            const page = state.page;
+            if (!page) return;
+            if (state.tab === 'columns') {
+                if (!state.columns.length) {
+                    body.appendChild(emptyNote(page.layout ? 'TongGuOCR found no text columns on this page.' : 'Column-by-column text appears here once the TongGuOCR re-index has added this page’s layout.'));
                     return;
                 }
-                createViewer();
-            }
-
-            function createViewer() {
-                const galleryContainer = document.getElementById('gallery-container');
-                if (!galleryContainer) return;
-
-                viewer = new Viewer(galleryContainer, {
-                    toolbar: {
-                        zoomIn: true,
-                        zoomOut: true,
-                        oneToOne: true,
-                        reset: true,
-                        prev: true,
-                        play: false,
-                        next: true,
-                        rotateLeft: false,
-                        rotateRight: false,
-                        flipHorizontal: false,
-                        flipVertical: false,
-                    },
-                    url(image) {
-                        return image.getAttribute('data-original') || image.src;
-                    },
-                    zoomRatio: 0.1,
-                    minZoomRatio: 0.5,
-                    maxZoomRatio: 5,
-                    inline: false,
-                    navbar: false,
-                    title: false
+                const hint = document.createElement('p');
+                hint.className = 'text-xs text-slate-500 mb-2';
+                hint.textContent = 'Each column read on its own, in reading order. Hover to find it on the page; click to zoom to it. This per-column reading is for locating text and is a little less accurate than the TongGuOCR tab.';
+                body.appendChild(hint);
+                state.columns.forEach((c, k) => {
+                    const item = document.createElement('div');
+                    item.className = 'col-item flex gap-2 px-2 py-1 rounded cursor-pointer';
+                    item.dataset.k = k;
+                    const n = document.createElement('span');
+                    n.className = 'shrink-0 w-7 text-right text-xs font-semibold text-indigo-500 pt-1 tabular-nums';
+                    n.textContent = c.n;
+                    const t = document.createElement('span');
+                    t.className = 'ocr-text';
+                    t.append(...highlightNodes(c.text.replace(/\n/g, ''), state.variants));
+                    if (!c.text) t.append(emptyNote('(nothing read)'));
+                    item.append(n, t);
+                    item.addEventListener('mouseenter', () => setHover(k));
+                    item.addEventListener('mouseleave', () => setHover(-1));
+                    item.addEventListener('click', () => selectColumn(k, { zoom: true }));
+                    if (k === state.selected) item.classList.add('selected');
+                    body.appendChild(item);
                 });
+                return;
             }
-
-            function openFocusedImage() {
-                if (!focusImageId || focusHandled) return;
-                const imageElement = document.querySelector(`#gallery-container img[data-image-id='${focusImageId}']`);
-                if (!imageElement) return;
-                focusHandled = true;
-                viewImage(imageElement);
+            const text = state.tab === 'hunyuan' ? page.hunyuan_text : page.tongguocr_text;
+            if (!text) {
+                body.appendChild(emptyNote(state.tab === 'hunyuan'
+                    ? 'HunyuanOCR returned no text for this page.'
+                    : (page.tongguocr_text === '' ? 'TongGuOCR returned no text for this page.' : 'This page hasn’t been through TongGuOCR yet.')));
+                return;
             }
+            const div = document.createElement('div');
+            div.className = 'ocr-text';
+            div.append(...highlightNodes(text, state.variants, locateString));
+            body.appendChild(div);
+            body.querySelector('mark.hl')?.scrollIntoView({ block: 'center' });
+        }
 
-            function onGalleryUpdated() {
-                syncViewer();
-                openFocusedImage();
+        // ---------- Keyboard ----------
+        document.addEventListener('keydown', (e) => {
+            if (e.target.closest?.('input, textarea') || e.ctrlKey || e.metaKey || e.altKey) return;
+            const cx = stage.clientWidth / 2, cy = stage.clientHeight / 2;
+            switch (e.key) {
+                case 'ArrowLeft': goTo(state.index - 1); break;
+                case 'ArrowRight': goTo(state.index + 1); break;
+                case '+': case '=': zoomAt(1.5, cx, cy, true); break;
+                case '-': case '_': zoomAt(1 / 1.5, cx, cy, true); break;
+                case '0': fitPage(); break;
+                case 'n': gotoHit(state.hitIndex + 1); break;
+                case 'N': gotoHit(state.hitIndex - 1); break;
+                case 'c': case 'C': $('show-columns').click(); break;
+                case 'g': case 'G': $('grid').classList.contains('hidden') ? showGrid() : hideGrid(); break;
+                case 'Escape': hideGrid(); selectColumn(-1); break;
+                default: return;
             }
+            e.preventDefault();
+        });
 
-            function init() {
-                createViewer();
-                openFocusedImage();
-            }
-
-            if (document.readyState === 'loading') {
-                document.addEventListener('DOMContentLoaded', init);
-            } else {
-                init();
-            }
-
-            // The infinite-scroll trigger swaps itself with outerHTML, so the swap
-            // target is detached by the time this fires; the event is dispatched on the
-            // newly inserted nodes instead, which is what event.target points at.
-            document.body.addEventListener('htmx:afterSwap', function(event) {
-                const galleryContainer = document.getElementById('gallery-container');
-                const swapped = event.target;
-                if (!galleryContainer || !swapped) return;
-                if (swapped === galleryContainer || galleryContainer.contains(swapped)) {
-                    onGalleryUpdated();
-                }
-            });
-
-            document.body.addEventListener('click', function(event) {
-                const imageTarget = event.target.closest('img[data-image-id]');
-                const cardTarget = event.target.closest('.gallery-link');
-                const target = imageTarget || (cardTarget && cardTarget.querySelector('img[data-image-id]'));
-
-                if (!target) return;
-                event.preventDefault();
-                viewImage(target);
-            });
-        })();
+        // ---------- Start ----------
+        let initialTab = 'columns';
+        try { initialTab = localStorage.getItem('viewer.tab') || initialTab; } catch (_) {}
+        setTab(['columns', 'tongguocr', 'hunyuan'].includes(initialTab) ? initialTab : 'columns');
+        if (!pages.length) {
+            $('stage-loading').textContent = 'This source has no pages yet.';
+        } else {
+            const start = data.focusPageId ? pages.findIndex((p) => p.id === data.focusPageId) : 0;
+            goTo(start < 0 ? 0 : start, { zoomToHit: !!state.variants.length });
+        }
+    })();
     </script>
+{% else %}
+    <main class="flex-1 flex items-center justify-center">
+        <div class="text-center">
+            <svg class="mx-auto h-12 w-12 text-slate-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4v.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+            <h2 class="text-lg font-semibold text-slate-700 mb-2">{{ error }}</h2>
+            <p class="text-sm text-slate-500 mb-4">The requested collection could not be found.</p>
+            <a href="/" class="inline-block text-indigo-600 hover:text-indigo-800 font-medium">← Go back</a>
+        </div>
+    </main>
+{% endif %}
 </body>
 </html>

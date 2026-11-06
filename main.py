@@ -146,6 +146,14 @@ def expand_fuzzy_queries(query: str) -> list[str]:
 
     return expanded_queries
 
+def search_variants(query: str, fuzzy: bool) -> list[str]:
+    """Every string a search for `query` matches: Simplified and Traditional
+    forms, plus OCR look-alike variants when fuzzy. The viewer uses the same
+    list to highlight a hit, so it finds exactly what the search found."""
+    variants = expand_fuzzy_queries(query) if fuzzy else [query, t2s.convert(query), s2t.convert(query)]
+    return list(dict.fromkeys(variants))
+
+
 def parse_topic_id(topic_id: str | None) -> int | None:
     """Form selects submit "" for the All Topics option; treat that as unassigned."""
     if topic_id is None or not str(topic_id).strip():
@@ -558,8 +566,7 @@ async def search(request: Request, query: str = "", fuzzy: bool = False, topic_i
             context={"request": request, "results": [], "fuzzy": fuzzy, "topic_name": topic_name},
         )
 
-    search_queries = expand_fuzzy_queries(query) if fuzzy else [query, t2s.convert(query), s2t.convert(query)]
-    search_queries = list(dict.fromkeys(search_queries))
+    search_queries = search_variants(query, fuzzy)
 
     # SQLite's default limit is 999 bound params; stay comfortably under that per statement.
     # Each variant binds twice (once per OCR engine) and the topic filter takes one more.
@@ -640,96 +647,92 @@ async def search(request: Request, query: str = "", fuzzy: bool = False, topic_i
     )
 
 @app.get("/viewer/{source_id}", response_class=HTMLResponse)
-async def image_viewer(request: Request, source_id: int, focus_image_id: int = None):
-    """Serve the image viewer page for a specific source"""
+async def image_viewer(
+    request: Request,
+    source_id: int,
+    focus_image_id: int | None = None,
+    q: str = "",
+    fuzzy: bool = False,
+):
+    """Page-by-page reader for one source.
+
+    The page list is embedded up front; each page's text and layout are fetched
+    from /api/pages/{id} as the reader moves. `q` (and `fuzzy`) carry a search
+    over from the results list so the reader opens on that hit, highlighted.
+    """
     db = await get_db()
-    initial_page = 0
     try:
-        # Get source info
         cursor = await db.execute("SELECT * FROM sources WHERE id = ?", (source_id,))
         source = await cursor.fetchone()
-        
         if not source:
             return templates.TemplateResponse(
-                request=request, 
-                name="viewer.html", 
-                context={"request": request, "source": None, "error": "Source not found"}
+                request=request,
+                name="viewer.html",
+                context={"request": request, "source": None, "error": "Source not found"},
+                status_code=404,
             )
-        
-        # Get image count for this source
-        cursor = await db.execute("SELECT COUNT(*) as count FROM pages WHERE source_id = ?", (source_id,))
-        count_row = await cursor.fetchone()
-        image_count = count_row['count'] if count_row else 0
-
-        if focus_image_id is not None:
-            cursor = await db.execute(
-                "SELECT COUNT(*) as rank FROM pages WHERE source_id = ? AND id <= ?",
-                (source_id, focus_image_id)
-            )
-            rank_row = await cursor.fetchone()
-            if rank_row and rank_row['rank']:
-                initial_page = max(0, (rank_row['rank'] - 1) // 12)
-    finally:
-        await db.close()
-    
-    return templates.TemplateResponse(
-        request=request, 
-        name="viewer.html", 
-        context={
-            "request": request, 
-            "source": dict(source),
-            "image_count": image_count,
-            "focus_image_id": focus_image_id,
-            "initial_page": initial_page
-        }
-    )
-
-@app.get("/api/images/{source_id}", response_class=HTMLResponse)
-async def get_images(request: Request, source_id: int, page: int = 0):
-    """API endpoint to fetch images for a specific source with pagination"""
-    page = max(0, page)
-    page_size = 12
-    offset = page * page_size
-    
-    db = await get_db()
-    try:
-        # Get paginated images
-        cursor = await db.execute("""
-            SELECT id, image_path, ocr_text 
-            FROM pages 
-            WHERE source_id = ?
-            ORDER BY id ASC
-            LIMIT ? OFFSET ?
-        """, (source_id, page_size, offset))
-        raw_images = await cursor.fetchall()
-        
-        # Get total count
-        cursor = await db.execute("SELECT COUNT(*) as count FROM pages WHERE source_id = ?", (source_id,))
-        count_row = await cursor.fetchone()
-        total_count = count_row['count'] if count_row else 0
-        
+        cursor = await db.execute(
+            "SELECT id, image_path FROM pages WHERE source_id = ? ORDER BY id ASC", (source_id,)
+        )
+        pages = [{"id": row["id"], "image_url": get_image_url(row["image_path"])} for row in await cursor.fetchall()]
     finally:
         await db.close()
 
-    images = []
-    for img in raw_images:
-        row = dict(img)
-        row["image_url"] = get_image_url(row["image_path"])
-        images.append(row)
-    
+    query = q.strip()
     return templates.TemplateResponse(
         request=request,
-        name="partials/image_grid.html",
+        name="viewer.html",
         context={
             "request": request,
-            "images": images,
-            "source_id": source_id,
-            "page": page,
-            "page_size": page_size,
-            "total_count": total_count,
-            "has_more": (page + 1) * page_size < total_count
-        }
+            "source": dict(source),
+            "viewer_data": {
+                "pages": pages,
+                "focusPageId": focus_image_id,
+                "query": query,
+                "fuzzy": fuzzy,
+                "variants": search_variants(query, fuzzy) if query else [],
+            },
+        },
     )
+
+
+@app.get("/api/variants")
+async def get_variants(q: str = "", fuzzy: bool = False):
+    """Search variants for a query typed into the viewer's find box."""
+    query = q.strip()
+    return {"variants": search_variants(query, fuzzy) if query else []}
+
+
+@app.get("/api/pages/{page_id}")
+async def get_page(page_id: int):
+    """One page's image, both OCR texts, and TongGuOCR column layout."""
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT id, source_id, image_path, ocr_text, tongguocr_text, tongguocr_layout FROM pages WHERE id = ?",
+            (page_id,),
+        )
+        row = await cursor.fetchone()
+    finally:
+        await db.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Page not found")
+
+    layout = None
+    if row["tongguocr_layout"]:
+        try:
+            layout = json.loads(row["tongguocr_layout"])
+        except ValueError:
+            layout = None
+    return {
+        "id": row["id"],
+        "source_id": row["source_id"],
+        "image_url": get_image_url(row["image_path"]),
+        "image_path": row["image_path"],
+        "hunyuan_text": row["ocr_text"],
+        "tongguocr_text": row["tongguocr_text"],
+        "layout": layout,
+    }
 
 @app.post("/clear-database")
 async def clear_database(request: Request):

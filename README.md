@@ -106,12 +106,23 @@ a topic scopes the entire search to that topic's sources.
 | `GET`/`POST` | `/topics` | List or create topics |
 | `POST` | `/topics/{id}/delete` | Delete a topic; its sources survive, unassigned |
 | `GET` | `/search` | Search, with optional `fuzzy` and `topic_id` |
-| `GET` | `/viewer/{id}` | Page-image viewer; `?focus_image_id=` jumps to a page |
-| `GET` | `/api/images/{id}` | Paginated image grid fragment (12 per page) |
+| `GET` | `/viewer/{id}` | Page reader; `?focus_image_id=` opens a page, `?q=` (and `fuzzy`) highlights a search on it |
+| `GET` | `/api/pages/{id}` | One page as JSON: image URL, both OCR texts, TongGuOCR column layout |
+| `GET` | `/api/variants` | The variant strings a search for `?q=` matches (used by the reader's find box) |
 | `POST` | `/clear-database` | Wipe all pages, sources, and topics |
 
 Scraped and uploaded images are served through static mounts (`/images`, `/camoufox`,
 `/hocr`, `/uploads`); `get_image_url()` maps an on-disk path back to whichever mount covers it.
+
+**Finding a match on the page.** Neither engine's page text says where each character
+sits. TongGuOCR's layout detector does find every text column, so for each page the
+TongGuOCR server also reads each detected column on its own and stores the boxes with
+their text in `pages.tongguocr_layout`. The reader looks for a search in those
+per-column texts and places it within its column by where it falls in that column's
+text. If no column has an exact match, it falls back to the closest one (drawn dashed).
+Where one box spans several printed columns, the match can only be pinned to the whole
+box. This per-column reading is just for locating text; search uses the
+normal page text.
 
 ---
 

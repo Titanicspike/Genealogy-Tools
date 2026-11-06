@@ -15,7 +15,7 @@
                 {% endif %}
             </div>
             <div class="flex gap-2">
-                <a href="/viewer/{{ result.source_id }}?focus_image_id={{ result.id }}" class="text-xs text-emerald-600 hover:text-emerald-800 underline font-medium">View Image</a>
+                <a href="/viewer/{{ result.source_id }}?focus_image_id={{ result.id }}&q={{ query|urlencode }}{% if fuzzy %}&fuzzy=true{% endif %}" class="text-xs text-emerald-600 hover:text-emerald-800 underline font-medium">View Image</a>
                 <a href="{{ result.url }}" target="_blank" class="text-xs text-indigo-600 hover:text-indigo-800 underline truncate max-w-[200px]" title="{{ result.url }}">View Source</a>
             </div>
         </div>

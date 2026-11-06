@@ -54,12 +54,16 @@ async def init_db():
             )
         """)
         # Second OCR engine. ocr_text holds HunyuanOCR's output; tongguocr_text
-        # holds TongGuOCR's, and stays NULL until that page has been run through
-        # it (reindex_tongguocr.py fills in any that are missing).
+        # holds TongGuOCR's, and tongguocr_layout the JSON list of detected text
+        # columns (box + per-column text) the viewer uses to locate words. Both
+        # stay NULL until the page has been run through TongGuOCR
+        # (reindex_tongguocr.py fills in any that are missing).
         cursor = await db.execute("PRAGMA table_info(pages)")
         page_columns = {row[1] for row in await cursor.fetchall()}
         if "tongguocr_text" not in page_columns:
             await db.execute("ALTER TABLE pages ADD COLUMN tongguocr_text TEXT")
+        if "tongguocr_layout" not in page_columns:
+            await db.execute("ALTER TABLE pages ADD COLUMN tongguocr_layout TEXT")
         await backfill_source_titles(db)
         await db.commit()
 
