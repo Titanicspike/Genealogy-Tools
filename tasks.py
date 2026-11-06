@@ -7,6 +7,7 @@ import base64
 import re
 import fitz
 from HunyuanOCR.HunyuanOCR import extractText
+from TongGuOCR import TongGuOCR
 print(os.path.join(os.path.dirname(__file__), 'CamoufoxScraping'))
 # Add CamoufoxScraping to the path so we can import the scrapers
 sys.path.append(os.path.join(os.path.dirname(__file__), 'CamoufoxScraping'))
@@ -27,6 +28,43 @@ def format_error(exc: Exception) -> str:
     return reason[:500]
 
 
+async def run_tongguocr(image_path: str) -> str | None:
+    """TongGuOCR text for a page, or None if its server is down or it fails.
+
+    TongGuOCR is a second index alongside HunyuanOCR, so a failure here must not
+    fail the whole source; reindex_tongguocr.py picks up any NULL pages later.
+    """
+    try:
+        return await asyncio.to_thread(TongGuOCR.extractText, image_path)
+    except Exception as exc:
+        print(f"TongGuOCR failed for {image_path}: {format_error(exc)}")
+        return None
+
+
+async def ocr_page(image_path: str) -> tuple[str, str | None]:
+    """Run both OCR engines on one page. They are separate servers, so run them
+    side by side."""
+    hunyuan_text, tongguocr_text = await asyncio.gather(
+        asyncio.to_thread(extractText, image_path),
+        run_tongguocr(image_path),
+    )
+    return hunyuan_text, tongguocr_text
+
+
+async def insert_page(source_id: int, image_path: str):
+    ocr_text, tongguocr_text = await ocr_page(image_path)
+    # Open a fresh connection for each image to avoid long locks
+    db = await get_db()
+    try:
+        await db.execute(
+            "INSERT INTO pages (source_id, image_path, ocr_text, tongguocr_text) VALUES (?, ?, ?, ?)",
+            (source_id, image_path, ocr_text, tongguocr_text),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+
 async def perform_ocr(source_id: int, image_dir: str):
     if not image_dir or not os.path.isdir(image_dir):
         print(f"Directory not found or invalid: {image_dir}")
@@ -38,18 +76,7 @@ async def perform_ocr(source_id: int, image_dir: str):
         if filename.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):
             image_path = os.path.join(image_dir, filename)
             print(f"Processing {image_path}...")
-            ocr_text = await asyncio.to_thread(extractText, image_path)
-            
-            # Open a fresh connection for each image to avoid long locks
-            db = await get_db()
-            try:
-                await db.execute(
-                    "INSERT INTO pages (source_id, image_path, ocr_text) VALUES (?, ?, ?)",
-                    (source_id, image_path, ocr_text)
-                )
-                await db.commit()
-            finally:
-                await db.close()
+            await insert_page(source_id, image_path)
 
 
 def render_pdf_pages(pdf_path: str, output_dir: str) -> list[str]:
@@ -94,16 +121,7 @@ async def process_uploaded_files(source_id: int, file_paths: list[str]):
             await db.close()
 
         for image_path in image_paths:
-            ocr_text = await asyncio.to_thread(extractText, image_path)
-            db = await get_db()
-            try:
-                await db.execute(
-                    "INSERT INTO pages (source_id, image_path, ocr_text) VALUES (?, ?, ?)",
-                    (source_id, image_path, ocr_text),
-                )
-                await db.commit()
-            finally:
-                await db.close()
+            await insert_page(source_id, image_path)
 
         db = await get_db()
         try:

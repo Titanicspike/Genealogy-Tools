@@ -53,6 +53,13 @@ async def init_db():
                 FOREIGN KEY(source_id) REFERENCES sources(id)
             )
         """)
+        # Second OCR engine. ocr_text holds HunyuanOCR's output; tongguocr_text
+        # holds TongGuOCR's, and stays NULL until that page has been run through
+        # it (reindex_tongguocr.py fills in any that are missing).
+        cursor = await db.execute("PRAGMA table_info(pages)")
+        page_columns = {row[1] for row in await cursor.fetchall()}
+        if "tongguocr_text" not in page_columns:
+            await db.execute("ALTER TABLE pages ADD COLUMN tongguocr_text TEXT")
         await backfill_source_titles(db)
         await db.commit()
 
