@@ -34,7 +34,7 @@ sys.path.insert(0, str(TONGGUOCR_ROOT))
 os.chdir(TONGGUOCR_ROOT)
 
 import torch  # noqa: E402
-from PIL import Image  # noqa: E402
+from PIL import Image, ImageOps  # noqa: E402
 from tongguocr import load_config, run_pipeline_on_image  # noqa: E402
 from tongguocr.layout import extract_line_bboxes  # noqa: E402
 # Private helpers of the pinned TongGuOCR checkout; reusing them shares the
@@ -84,19 +84,24 @@ def recognize_columns(image_path: Path, column_boxes: list) -> list[str]:
     messages = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": CONFIG["ocr"]["prompt"]}]}]
     prompt = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
-    page = Image.open(image_path).convert("RGB")
+    # The layout detector reads phone photos upright (EXIF rotation applied),
+    # so its boxes are in rotated coordinates; crop from the same orientation.
+    page = ImageOps.exif_transpose(Image.open(image_path)).convert("RGB")
     crop_dir = image_path.parent / "columns"
     crop_dir.mkdir(exist_ok=True)
-    crop_paths = []
+    crop_paths = {}
     for index, (x1, y1, x2, y2) in enumerate(column_boxes):
         pad = max(4, int(min(x2 - x1, y2 - y1) * 0.15))
-        crop = page.crop((max(0, x1 - pad), max(0, y1 - pad), min(page.width, x2 + pad), min(page.height, y2 + pad)))
+        box = (max(0, x1 - pad), max(0, y1 - pad), min(page.width, x2 + pad), min(page.height, y2 + pad))
+        if box[2] - box[0] < 2 or box[3] - box[1] < 2:
+            LOGGER.warning("Skipping column %s: box %s lies outside the %sx%s page", index, (x1, y1, x2, y2), page.width, page.height)
+            continue
         crop_path = crop_dir / f"{index}.png"
-        crop.save(crop_path)
-        crop_paths.append(crop_path)
+        page.crop(box).save(crop_path)
+        crop_paths[index] = crop_path
 
     texts = [""] * len(column_boxes)
-    order = sorted(range(len(column_boxes)), key=lambda i: _column_token_cap(column_boxes[i]))
+    order = sorted(crop_paths, key=lambda i: _column_token_cap(column_boxes[i]))
     for start in range(0, len(order), COLUMN_BATCH_SIZE):
         batch = order[start:start + COLUMN_BATCH_SIZE]
         images = [prepare_pil_image(crop_paths[i], image_max_pixels=max_pixels, image_min_pixels=min_pixels) for i in batch]
@@ -113,10 +118,31 @@ def recognize_columns(image_path: Path, column_boxes: list) -> list[str]:
     return texts
 
 
+def _apply_exif_rotation(image_path: Path) -> None:
+    """Rewrite a phone photo upright, without its EXIF rotation tag.
+
+    TongGuOCR's layout detector reads images with the camera rotation applied,
+    but its block cropping (and PIL generally) does not, so boxes for a rotated
+    photo land outside the unrotated image. Baking the rotation in once means
+    every step sees the same upright image, which is also how browsers show it.
+    """
+    with Image.open(image_path) as image:
+        if image.getexif().get(0x0112, 1) == 1:  # 0x0112 = Orientation; 1 = upright
+            return
+        upright = ImageOps.exif_transpose(image)
+        if upright.mode not in ("RGB", "L"):
+            upright = upright.convert("RGB")
+    if image_path.suffix.lower() in (".jpg", ".jpeg"):
+        upright.save(image_path, quality=95)
+    else:
+        upright.save(image_path)
+
+
 def recognize(image_bytes: bytes, suffix: str, with_text: bool = True) -> dict:
     with tempfile.TemporaryDirectory(prefix="tongguocr_") as work_dir:
         image_path = Path(work_dir) / f"page{suffix}"
         image_path.write_bytes(image_bytes)
+        _apply_exif_rotation(image_path)
         started = time.perf_counter()
         with LOCK:
             try:
