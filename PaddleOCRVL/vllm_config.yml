@@ -1,0 +1,9 @@
+# vLLM settings for the PaddleOCR-VL-1.6 recognizer (passed via --backend_config).
+# The model is 0.9B, so a small slice of the 16 GB card is enough; the rest is
+# shared with HunyuanOCR's vLLM, TongGuOCR and the layout detector.
+gpu-memory-utilization: 0.2
+max-num-seqs: 32
+# PaddleOCR's default (131072) makes vLLM reserve ~6 GB for its startup memory
+# profile, more than this whole share. Each text-block crop is at most ~1300
+# image tokens, so this still fits a dozen blocks per step.
+max-num-batched-tokens: 16384

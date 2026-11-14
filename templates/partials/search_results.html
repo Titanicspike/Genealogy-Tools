@@ -21,7 +21,7 @@
         </div>
         {% for match in result.matches %}
         <div class="mb-3">
-            <span class="inline-block text-[11px] font-semibold px-1.5 py-0.5 mb-1 rounded {% if match.engine == 'TongGuOCR' %}bg-amber-50 text-amber-700{% else %}bg-sky-50 text-sky-700{% endif %}">Matched in {{ match.engine }}</span>
+            <span class="inline-block text-[11px] font-semibold px-1.5 py-0.5 mb-1 rounded {% if match.engine == 'TongGuOCR' %}bg-amber-50 text-amber-700{% elif match.engine == 'PaddleOCR-VL' %}bg-violet-50 text-violet-700{% else %}bg-sky-50 text-sky-700{% endif %}">Matched in {{ match.engine }}</span>
             <p class="text-sm text-slate-700 bg-slate-50 p-3 rounded border border-slate-100">{{ match.text }}</p>
         </div>
         {% endfor %}

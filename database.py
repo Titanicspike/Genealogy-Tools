@@ -64,6 +64,10 @@ async def init_db():
             await db.execute("ALTER TABLE pages ADD COLUMN tongguocr_text TEXT")
         if "tongguocr_layout" not in page_columns:
             await db.execute("ALTER TABLE pages ADD COLUMN tongguocr_layout TEXT")
+        # Third engine: PaddleOCR-VL-1.6's page text. NULL until the page has
+        # been through it (reindex_paddleocr.py fills in any that are missing).
+        if "paddleocr_text" not in page_columns:
+            await db.execute("ALTER TABLE pages ADD COLUMN paddleocr_text TEXT")
         await backfill_source_titles(db)
         await db.commit()
 

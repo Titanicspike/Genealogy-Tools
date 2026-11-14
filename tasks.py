@@ -8,6 +8,7 @@ import re
 import fitz
 from HunyuanOCR.HunyuanOCR import extractText
 from TongGuOCR import TongGuOCR
+from PaddleOCRVL import PaddleOCRVL
 print(os.path.join(os.path.dirname(__file__), 'CamoufoxScraping'))
 # Add CamoufoxScraping to the path so we can import the scrapers
 sys.path.append(os.path.join(os.path.dirname(__file__), 'CamoufoxScraping'))
@@ -41,18 +42,33 @@ async def run_tongguocr(image_path: str) -> tuple[str | None, str | None]:
         return None, None
 
 
+async def run_paddleocr(image_path: str) -> str | None:
+    """PaddleOCR-VL text for a page, or None on failure.
+
+    Like TongGuOCR, a failure leaves the column NULL for reindex_paddleocr.py
+    to fill in later rather than failing the source.
+    """
+    try:
+        return await asyncio.to_thread(PaddleOCRVL.recognize, image_path)
+    except Exception as exc:
+        print(f"PaddleOCR-VL failed for {image_path}: {format_error(exc)}")
+        return None
+
+
 async def insert_page(source_id: int, image_path: str):
-    # The two engines are separate servers, so run them side by side.
-    ocr_text, (tongguocr_text, tongguocr_layout) = await asyncio.gather(
+    # The three engines are separate servers, so run them side by side.
+    ocr_text, (tongguocr_text, tongguocr_layout), paddleocr_text = await asyncio.gather(
         asyncio.to_thread(extractText, image_path),
         run_tongguocr(image_path),
+        run_paddleocr(image_path),
     )
     # Open a fresh connection for each image to avoid long locks
     db = await get_db()
     try:
         await db.execute(
-            "INSERT INTO pages (source_id, image_path, ocr_text, tongguocr_text, tongguocr_layout) VALUES (?, ?, ?, ?, ?)",
-            (source_id, image_path, ocr_text, tongguocr_text, tongguocr_layout),
+            "INSERT INTO pages (source_id, image_path, ocr_text, tongguocr_text, tongguocr_layout, paddleocr_text)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (source_id, image_path, ocr_text, tongguocr_text, tongguocr_layout, paddleocr_text),
         )
         await db.commit()
     finally:

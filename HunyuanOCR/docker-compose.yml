@@ -22,7 +22,7 @@ services:
       - --mm-processor-cache-gb
       - "0"
       - --gpu-memory-utilization
-      - "0.65"
+      - "0.4"
       - --max-model-len
       - "65536"
       - --max-num-batched-tokens

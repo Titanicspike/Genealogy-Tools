@@ -79,10 +79,24 @@ Genealogy scans are frequently too large for the model's encoder cache. Rather t
 failing, the client parses the token-overflow error, computes the scale factor that would
 fit, shrinks the image, and retries — up to 5 attempts.
 
+### OCR (`PaddleOCRVL/`)
+
+A third engine, stored in `pages.paddleocr_text`. `docker-compose.yml` runs the official
+two-container PaddleOCR-VL-1.6 deployment, using the images built for Blackwell (sm120)
+GPUs: a vLLM server for the 0.9B PaddleOCR-VL recognizer, and the document pipeline, which
+finds each text block with PP-DocLayoutV3, reads it with the recognizer, and returns the
+blocks in reading order. The pipeline serves `POST /layout-parsing` on port **9200**.
+`PaddleOCRVL.py` is the client; it joins the text blocks into the page text.
+
+Every new page is sent to all three engines at once. A TongGuOCR or PaddleOCR-VL failure
+leaves that engine's column NULL instead of failing the source; `reindex_tongguocr.py` and
+`reindex_paddleocr.py` fill in any NULL pages later and can be stopped and re-run.
+
 ### Search (`main.py`)
 
 Every query runs in at least three forms: as typed, Simplified (`t2s`), and Traditional
-(`s2t`), courtesy of OpenCC. Matching is SQL `LIKE` against `pages.ocr_text`.
+(`s2t`), courtesy of OpenCC. Matching is SQL `LIKE` against every engine's text (`OCR_ENGINES` in `main.py`), and
+result cards say which engine(s) matched.
 
 Ticking **fuzzy** expands much further. `similarCharacters.json` maps each character to
 the characters OCR most often mistakes it for, ranked by observed frequency. Each character
@@ -107,7 +121,7 @@ a topic scopes the entire search to that topic's sources.
 | `POST` | `/topics/{id}/delete` | Delete a topic; its sources survive, unassigned |
 | `GET` | `/search` | Search, with optional `fuzzy` and `topic_id` |
 | `GET` | `/viewer/{id}` | Page reader; `?focus_image_id=` opens a page, `?q=` (and `fuzzy`) highlights a search on it |
-| `GET` | `/api/pages/{id}` | One page as JSON: image URL, both OCR texts, TongGuOCR column layout |
+| `GET` | `/api/pages/{id}` | One page as JSON: image URL, every engine's OCR text, TongGuOCR column layout |
 | `GET` | `/api/variants` | The variant strings a search for `?q=` matches (used by the reader's find box) |
 | `POST` | `/clear-database` | Wipe all pages, sources, and topics |
 
@@ -208,6 +222,20 @@ curl http://127.0.0.1:9000/v1/models
 
 The client in `HunyuanOCR.py` targets `http://127.0.0.1:9000/v1` — edit `base_url` there
 if you serve the model elsewhere.
+
+Start PaddleOCR-VL the same way. The images bundle their models, so there is nothing
+else to download:
+
+```bash
+cd PaddleOCRVL
+docker compose up -d
+```
+
+```bash
+curl http://127.0.0.1:9200/health
+```
+
+The client targets `http://127.0.0.1:9200`; set `PADDLEOCR_URL` to point it elsewhere.
 
 ### 5. (Optional) Add the fuzzy-search confusion map
 

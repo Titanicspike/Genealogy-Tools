@@ -76,6 +76,15 @@ def get_image_url(image_path: str) -> str:
 
     return normalized
 
+# Every OCR engine's page text, as (label shown in results, pages column).
+# Search matches a page if a query appears in any of them.
+OCR_ENGINES = (
+    ("HunyuanOCR", "ocr_text"),
+    ("TongGuOCR", "tongguocr_text"),
+    ("PaddleOCR-VL", "paddleocr_text"),
+)
+
+
 def chunked(iterable, size):
     it = iter(iterable)
     while chunk := list(itertools.islice(it, size)):
@@ -569,8 +578,8 @@ async def search(request: Request, query: str = "", fuzzy: bool = False, topic_i
     search_queries = search_variants(query, fuzzy)
 
     # SQLite's default limit is 999 bound params; stay comfortably under that per statement.
-    # Each variant binds twice (once per OCR engine) and the topic filter takes one more.
-    BATCH_SIZE = 450
+    # Each variant binds once per OCR engine and the topic filter takes one more.
+    BATCH_SIZE = 900 // len(OCR_ENGINES) - 1
 
     db = await get_db()
     try:
@@ -578,11 +587,10 @@ async def search(request: Request, query: str = "", fuzzy: bool = False, topic_i
         match_counts = {}
 
         for batch in chunked(search_queries, BATCH_SIZE):
-            # A page matches if any variant appears in either engine's text.
-            like_clauses = " OR ".join(
-                ["(p.ocr_text LIKE ? OR p.tongguocr_text LIKE ?)"] * len(batch)
-            )
-            params = [f"%{q}%" for q in batch for _ in range(2)]
+            # A page matches if any variant appears in any engine's text.
+            one_variant = "(" + " OR ".join(f"p.{column} LIKE ?" for _, column in OCR_ENGINES) + ")"
+            like_clauses = " OR ".join([one_variant] * len(batch))
+            params = [f"%{q}%" for q in batch for _ in OCR_ENGINES]
 
             topic_clause = ""
             if selected_topic_id is not None:
@@ -590,7 +598,7 @@ async def search(request: Request, query: str = "", fuzzy: bool = False, topic_i
                 params.append(selected_topic_id)
 
             cursor = await db.execute(f"""
-                SELECT p.id, p.source_id, p.ocr_text, p.tongguocr_text, p.image_path,
+                SELECT p.id, p.source_id, p.ocr_text, p.tongguocr_text, p.paddleocr_text, p.image_path,
                        s.url, s.category, s.title AS source_title, t.name AS topic_name
                 FROM pages p
                 JOIN sources s ON p.source_id = s.id
@@ -602,33 +610,32 @@ async def search(request: Request, query: str = "", fuzzy: bool = False, topic_i
             for row in batch_rows:
                 page = rows_by_id.setdefault(row["id"], {**dict(row), "engines": set()})
                 for q in batch:
-                    in_hunyuan = q in (page["ocr_text"] or "")
-                    in_tongguocr = q in (page["tongguocr_text"] or "")
-                    if in_hunyuan:
-                        page["engines"].add("HunyuanOCR")
-                    if in_tongguocr:
-                        page["engines"].add("TongGuOCR")
-                    if in_hunyuan or in_tongguocr:
+                    hit = False
+                    for engine, column in OCR_ENGINES:
+                        if q in (page[column] or ""):
+                            page["engines"].add(engine)
+                            hit = True
+                    if hit:
                         match_counts[page["id"]] = match_counts.get(page["id"], 0) + 1
     finally:
         await db.close()
 
     for page in rows_by_id.values():
-        # Show the text from each engine that matched, HunyuanOCR first.
+        # Show the text from each engine that matched, in OCR_ENGINES order.
         page["matches"] = [
-            {"engine": engine, "text": text}
-            for engine, text in (("HunyuanOCR", page["ocr_text"]), ("TongGuOCR", page["tongguocr_text"]))
+            {"engine": engine, "text": page[column]}
+            for engine, column in OCR_ENGINES
             if engine in page["engines"]
         ] or [
             # LIKE is case-insensitive for Latin letters but `in` is not, so a
             # page can match in SQL with no engine recorded; show it anyway.
-            {"engine": engine, "text": text}
-            for engine, text in (("HunyuanOCR", page["ocr_text"]), ("TongGuOCR", page["tongguocr_text"]))
-            if text
+            {"engine": engine, "text": page[column]}
+            for engine, column in OCR_ENGINES
+            if page[column]
         ][:1]
 
     def sort_key(row):
-        exact_match = query in (row["ocr_text"] or "") or query in (row["tongguocr_text"] or "")
+        exact_match = any(query in (row[column] or "") for _, column in OCR_ENGINES)
         return (not exact_match, -match_counts[row["id"]])
 
     results = sorted(rows_by_id.values(), key=sort_key)
@@ -705,11 +712,11 @@ async def get_variants(q: str = "", fuzzy: bool = False):
 
 @app.get("/api/pages/{page_id}")
 async def get_page(page_id: int):
-    """One page's image, both OCR texts, and TongGuOCR column layout."""
+    """One page's image, every engine's OCR text, and TongGuOCR column layout."""
     db = await get_db()
     try:
         cursor = await db.execute(
-            "SELECT id, source_id, image_path, ocr_text, tongguocr_text, tongguocr_layout FROM pages WHERE id = ?",
+            "SELECT id, source_id, image_path, ocr_text, tongguocr_text, paddleocr_text, tongguocr_layout FROM pages WHERE id = ?",
             (page_id,),
         )
         row = await cursor.fetchone()
@@ -731,6 +738,7 @@ async def get_page(page_id: int):
         "image_path": row["image_path"],
         "hunyuan_text": row["ocr_text"],
         "tongguocr_text": row["tongguocr_text"],
+        "paddleocr_text": row["paddleocr_text"],
         "layout": layout,
     }
 

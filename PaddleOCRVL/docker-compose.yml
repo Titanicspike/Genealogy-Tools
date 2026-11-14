@@ -1,0 +1,69 @@
+# PaddleOCR-VL-1.6: the official two-container deployment, using the images
+# built for Blackwell GPUs (sm120, i.e. the RTX 5060 Ti). The "offline" tags
+# ship with every model baked in, so nothing is downloaded at startup.
+#
+#   paddleocr-vlm-server  vLLM serving the PaddleOCR-VL-1.6-0.9B recognizer
+#   paddleocr-vl-api      the document pipeline: PP-DocLayoutV3 finds each text
+#                         block, sends it to the VLM server, and stitches the
+#                         results together in reading order. Serves
+#                         POST /layout-parsing on host port 9200.
+#
+# Both share GPU 0 with HunyuanOCR's vLLM and the TongGuOCR server, so the VLM
+# server's memory share is capped in vllm_config.yml.
+services:
+  paddleocr-vl-api:
+    image: ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddleocr-vl:latest-nvidia-gpu-sm120-offline
+    container_name: paddleocr-vl-api
+    ports:
+      - "9200:8080"
+    depends_on:
+      paddleocr-vlm-server:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
+    shm_size: 8g
+    user: root
+    restart: unless-stopped
+    volumes:
+      - ./pipeline_config.yaml:/home/paddleocr/pipeline_config.yaml:ro
+    command: paddlex --serve --pipeline /home/paddleocr/pipeline_config.yaml
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      start_period: 120s
+
+  paddleocr-vlm-server:
+    image: ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddleocr-genai-vllm-server:latest-nvidia-gpu-sm120-offline
+    container_name: paddleocr-vlm-server
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
+    shm_size: 8g
+    user: root
+    restart: unless-stopped
+    volumes:
+      - ./vllm_config.yml:/home/paddleocr/vllm_config.yml:ro
+    command:
+      - paddleocr
+      - genai_server
+      - --model_name
+      - PaddleOCR-VL-1.6-0.9B
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --backend
+      - vllm
+      - --backend_config
+      - /home/paddleocr/vllm_config.yml
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      start_period: 300s
