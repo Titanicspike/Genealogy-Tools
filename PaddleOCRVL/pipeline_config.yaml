@@ -25,7 +25,10 @@ SubModules:
     module_name: layout_detection
     model_name: PP-DocLayoutV3
     model_dir: null
-    batch_size: 8
+    # Official default is 8. PaddlePaddle keeps the GPU memory of its largest
+    # batch, and 8 full-size scans held ~2.5 GB more on a card shared by three
+    # OCR engines.
+    batch_size: 2
     threshold: 0.3
     layout_nms: True
     layout_unclip_ratio: [1.0, 1.0] 

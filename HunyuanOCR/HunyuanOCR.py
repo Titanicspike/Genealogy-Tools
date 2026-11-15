@@ -7,6 +7,8 @@ from io import BytesIO
 from openai import OpenAI, BadRequestError
 from PIL import Image
 
+from ocr_cleanup import collapse_repetitions
+
 client = OpenAI(
     api_key="EMPTY",
     base_url="http://127.0.0.1:9000/v1"
@@ -109,7 +111,7 @@ def extractText(image_path):
                 }
             )
 
-            result = response.choices[0].message.content
+            result = collapse_repetitions(response.choices[0].message.content)
 
             print("OCR Result:", result)
 

@@ -1,3 +1,12 @@
+import sys
+
+# The OCR clients print page text (Chinese) as they go. When the server's
+# console isn't UTF-8 (e.g. output redirected on Windows, which falls back to
+# cp1252), those prints raise UnicodeEncodeError and fail the whole upload.
+for stream in (sys.stdout, sys.stderr):
+    if hasattr(stream, "reconfigure"):
+        stream.reconfigure(encoding="utf-8", errors="replace")
+
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.templating import Jinja2Templates

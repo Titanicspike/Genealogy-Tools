@@ -22,6 +22,8 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+import requests
+
 from PaddleOCRVL import PaddleOCRVL
 
 # Same database the app uses (database.DB_PATH), resolved from this file so the
@@ -42,14 +44,27 @@ def wait_for_server() -> bool:
     return True
 
 
+class ServerDown(Exception):
+    pass
+
+
 def ocr_page(row):
     page_id, image_path = row
     if not os.path.isfile(image_path):
         return page_id, None, f"image missing: {image_path}"
-    try:
-        return page_id, PaddleOCRVL.recognize(image_path), None
-    except Exception as exc:
-        return page_id, None, f"{type(exc).__name__}: {exc}"
+    # The workers pull pages from a queue filled up front, so if the server
+    # goes away (e.g. a container restart) they must wait here and retry,
+    # rather than race through every remaining page as a failure.
+    for attempt in range(3):
+        try:
+            return page_id, PaddleOCRVL.recognize(image_path), None
+        except requests.ConnectionError as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            if not wait_for_server():
+                raise ServerDown(error)
+        except Exception as exc:
+            return page_id, None, f"{type(exc).__name__}: {exc}"
+    return page_id, None, error
 
 
 def main():
@@ -84,7 +99,8 @@ def main():
 
     done = failed = 0
     started = time.time()
-    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+    pool = ThreadPoolExecutor(max_workers=args.workers)
+    try:
         for index, (page_id, text, error) in enumerate(pool.map(ocr_page, pending), start=1):
             if error is None:
                 # Commit each page so the app sees progress and a stop loses nothing.
@@ -97,12 +113,11 @@ def main():
                 status = f"failed: {error}"
             rate = (time.time() - started) / index
             print(f"[{index}/{total}] page {page_id}: {status} | ETA {(total - index) * rate / 3600:.1f} h")
-            # If the server itself went away, stop rather than burn through every
-            # remaining page as a failure; a re-run picks up where this left off.
-            if error is not None and not error.startswith("image missing") and not wait_for_server():
-                print("PaddleOCR-VL server is down; stopping. Re-run once it is back up to resume.")
-                pool.shutdown(wait=False, cancel_futures=True)
-                break
+    except ServerDown:
+        # A re-run picks up where this left off.
+        print("PaddleOCR-VL server is down; stopping. Re-run once it is back up to resume.")
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
     db.close()
     print(f"Finished: {done} indexed, {failed} failed or skipped (re-run to retry those).")

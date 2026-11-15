@@ -13,6 +13,8 @@ from io import BytesIO
 import requests
 from PIL import Image, ImageOps
 
+from ocr_cleanup import collapse_repetitions
+
 PADDLEOCR_URL = os.environ.get("PADDLEOCR_URL", "http://127.0.0.1:9200")
 # A dense page takes a few seconds; leave plenty of headroom for queueing
 # behind other pages and for very large scans.
@@ -51,7 +53,10 @@ def html_to_text(content: str) -> str:
     content = re.sub(r"</t[dh]\s*>", " ", content, flags=re.IGNORECASE)
     content = re.sub(r"</tr\s*>|<br\s*/?>", "\n", content, flags=re.IGNORECASE)
     content = re.sub(r"<[^>]+>", "", content)
-    lines = (re.sub(r"[ \t]+", " ", line).strip() for line in html.unescape(content).splitlines())
+    # On garbled tables the model sometimes writes its internal cell tokens
+    # (<ecel>, <fcel>, ...) as escaped text, which unescaping turns back into tags.
+    content = re.sub(r"<(?:ecel|fcel|lcel|ucel|xcel|nl)>", " ", html.unescape(content))
+    lines = (re.sub(r"[ \t]+", " ", line).strip() for line in content.splitlines())
     return "\n".join(line for line in lines if line)
 
 
@@ -67,13 +72,13 @@ def blocks_to_text(blocks: list[dict]) -> str:
     return "\n\n".join(texts)
 
 
-def recognize(image_path: str) -> str:
-    """OCR one page and return its text ("" if the page has none)."""
-    print("Starting PaddleOCR-VL for image:", image_path)
+def _parse(image_b64: str, use_layout_detection: bool) -> list[dict]:
+    """The pipeline's blocks for one image, in reading order."""
     payload = {
-        "file": base64.b64encode(_image_bytes(image_path)).decode("ascii"),
+        "file": image_b64,
         "fileType": 1,  # image (0 is PDF)
         "visualize": False,  # don't send back rendered layout images
+        "useLayoutDetection": use_layout_detection,
     }
     response = requests.post(f"{PADDLEOCR_URL}/layout-parsing", json=payload, timeout=REQUEST_TIMEOUT)
     try:
@@ -83,11 +88,24 @@ def recognize(image_path: str) -> str:
     if response.status_code != 200 or not body or body.get("errorCode") != 0:
         detail = (body or {}).get("errorMsg") or response.text[:500]
         raise RuntimeError(f"PaddleOCR-VL server error {response.status_code}: {detail}")
+    return [
+        block
+        for page in body["result"]["layoutParsingResults"]
+        for block in page["prunedResult"].get("parsing_res_list", [])
+    ]
 
-    pages = body["result"]["layoutParsingResults"]
-    text = "\n\n".join(
-        blocks_to_text(page["prunedResult"].get("parsing_res_list", [])) for page in pages
-    ).strip()
+
+def recognize(image_path: str) -> str:
+    """OCR one page and return its text ("" if the page has none)."""
+    print("Starting PaddleOCR-VL for image:", image_path)
+    image_b64 = base64.b64encode(_image_bytes(image_path)).decode("ascii")
+    blocks = _parse(image_b64, use_layout_detection=True)
+    if not blocks:
+        # The layout detector finds nothing on some faint, low-contrast scans
+        # (grey grid-style lineage pages especially). Reading the whole page
+        # as one block is slower and loses block order, but beats no text.
+        blocks = _parse(image_b64, use_layout_detection=False)
+    text = collapse_repetitions(blocks_to_text(blocks))
     print("PaddleOCR-VL Result:", text)
     return text
 

@@ -5,6 +5,8 @@ import os
 
 import requests
 
+from ocr_cleanup import collapse_repetitions
+
 TONGGUOCR_URL = os.environ.get("TONGGUOCR_URL", "http://127.0.0.1:9100")
 # A dense page takes ~10-40s; leave plenty of headroom for very large scans.
 REQUEST_TIMEOUT = 600
@@ -16,7 +18,7 @@ PUNCTUATION_MAP = str.maketrans({"丶": "，", "⺀": "："})
 
 
 def normalize_text(text: str) -> str:
-    return text.translate(PUNCTUATION_MAP)
+    return collapse_repetitions(text.translate(PUNCTUATION_MAP))
 
 
 def recognize(image_path: str, with_text: bool = True) -> tuple[str | None, str]:
