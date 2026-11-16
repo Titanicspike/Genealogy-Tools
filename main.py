@@ -18,6 +18,7 @@ import shutil
 import uuid
 from functools import lru_cache
 from database import init_db, get_db, clear_db
+import ocr_engines
 from tasks import process_jiapu_source, process_uploaded_files
 from contextlib import asynccontextmanager
 import itertools
@@ -37,7 +38,11 @@ ALLOWED_UPLOAD_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", 
 async def lifespan(app: FastAPI):
     # Initialize DB on startup
     await init_db()
+    # Stop OCR engines that sit idle, so their GPU memory is free between jobs.
+    idle_monitor = ocr_engines.start_idle_monitor()
     yield
+    if idle_monitor:
+        idle_monitor.set()
 
 app = FastAPI(lifespan=lifespan)
 templates = Jinja2Templates(directory="templates")

@@ -5,6 +5,7 @@ import os
 
 import requests
 
+import ocr_engines
 from ocr_cleanup import collapse_repetitions
 
 TONGGUOCR_URL = os.environ.get("TONGGUOCR_URL", "http://127.0.0.1:9100")
@@ -33,15 +34,16 @@ def recognize(image_path: str, with_text: bool = True) -> tuple[str | None, str]
     with open(image_path, "rb") as image_file:
         image_bytes = image_file.read()
 
-    response = requests.post(
-        f"{TONGGUOCR_URL}/ocr" + ("" if with_text else "?mode=columns"),
-        data=image_bytes,
-        headers={
-            "Content-Type": "application/octet-stream",
-            "X-Image-Suffix": os.path.splitext(image_path)[1].lower() or ".jpg",
-        },
-        timeout=REQUEST_TIMEOUT,
-    )
+    with ocr_engines.in_use("tongguocr"):
+        response = requests.post(
+            f"{TONGGUOCR_URL}/ocr" + ("" if with_text else "?mode=columns"),
+            data=image_bytes,
+            headers={
+                "Content-Type": "application/octet-stream",
+                "X-Image-Suffix": os.path.splitext(image_path)[1].lower() or ".jpg",
+            },
+            timeout=REQUEST_TIMEOUT,
+        )
     if response.status_code != 200:
         try:
             detail = response.json().get("error", response.text)

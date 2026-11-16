@@ -9,6 +9,7 @@ import fitz
 from HunyuanOCR.HunyuanOCR import extractText
 from TongGuOCR import TongGuOCR
 from PaddleOCRVL import PaddleOCRVL
+import ocr_engines
 print(os.path.join(os.path.dirname(__file__), 'CamoufoxScraping'))
 # Add CamoufoxScraping to the path so we can import the scrapers
 sys.path.append(os.path.join(os.path.dirname(__file__), 'CamoufoxScraping'))
@@ -56,6 +57,9 @@ async def run_paddleocr(image_path: str) -> str | None:
 
 
 async def insert_page(source_id: int, image_path: str):
+    # Engines stopped for being idle are started one at a time first; starting
+    # them all at once from the parallel calls below can starve one of memory.
+    await asyncio.to_thread(ocr_engines.ensure_all)
     # The three engines are separate servers, so run them side by side.
     ocr_text, (tongguocr_text, tongguocr_layout), paddleocr_text = await asyncio.gather(
         asyncio.to_thread(extractText, image_path),

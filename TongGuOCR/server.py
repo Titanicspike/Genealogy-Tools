@@ -14,6 +14,10 @@ raw image bytes to /ocr and receives JSON with:
 POST /ocr?mode=columns skips block OCR and returns only the layout, for pages
 that already have text.
 
+POST /shutdown finishes any page in progress and exits, freeing the GPU. The
+app's idle monitor (ocr_engines.py) calls it, and starts the server again the
+next time a page needs it.
+
 Requests are processed one at a time: the pipeline holds a single GPU model and
 is not safe to run concurrently.
 """
@@ -194,6 +198,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path, _, query = self.path.partition("?")
+        if path == "/shutdown":
+            with LOCK:  # wait for any page in progress
+                self._send_json(200, {"ok": True})
+                LOGGER.info("Shutting down on request")
+                # shutdown() blocks until serve_forever returns, so not from
+                # this request's own thread.
+                threading.Thread(target=self.server.shutdown).start()
+            return
         if path != "/ocr":
             self._send_json(404, {"error": "not found"})
             return

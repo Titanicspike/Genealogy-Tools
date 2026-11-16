@@ -250,3 +250,6 @@ similarCharacters.json
 
 # Debug dump of an OCR request, containing a base64-encoded page image
 HunyuanOCR/payload.json
+
+# Last-use timestamps and the TongGuOCR server log, written by ocr_engines.py
+.ocr_activity/

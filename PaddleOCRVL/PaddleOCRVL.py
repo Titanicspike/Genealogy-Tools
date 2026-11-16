@@ -13,6 +13,7 @@ from io import BytesIO
 import requests
 from PIL import Image, ImageOps
 
+import ocr_engines
 from ocr_cleanup import collapse_repetitions
 
 PADDLEOCR_URL = os.environ.get("PADDLEOCR_URL", "http://127.0.0.1:9200")
@@ -99,12 +100,13 @@ def recognize(image_path: str) -> str:
     """OCR one page and return its text ("" if the page has none)."""
     print("Starting PaddleOCR-VL for image:", image_path)
     image_b64 = base64.b64encode(_image_bytes(image_path)).decode("ascii")
-    blocks = _parse(image_b64, use_layout_detection=True)
-    if not blocks:
-        # The layout detector finds nothing on some faint, low-contrast scans
-        # (grey grid-style lineage pages especially). Reading the whole page
-        # as one block is slower and loses block order, but beats no text.
-        blocks = _parse(image_b64, use_layout_detection=False)
+    with ocr_engines.in_use("paddleocr"):
+        blocks = _parse(image_b64, use_layout_detection=True)
+        if not blocks:
+            # The layout detector finds nothing on some faint, low-contrast scans
+            # (grey grid-style lineage pages especially). Reading the whole page
+            # as one block is slower and loses block order, but beats no text.
+            blocks = _parse(image_b64, use_layout_detection=False)
     text = collapse_repetitions(blocks_to_text(blocks))
     print("PaddleOCR-VL Result:", text)
     return text

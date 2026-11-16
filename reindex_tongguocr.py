@@ -19,6 +19,7 @@ import sqlite3
 import sys
 import time
 
+import ocr_engines
 from TongGuOCR import TongGuOCR
 
 # Same database the app uses (database.DB_PATH), resolved from this file so the
@@ -48,8 +49,8 @@ def main():
     # Page text is Chinese; don't let a non-UTF-8 console crash the run.
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-    if not wait_for_server():
-        raise SystemExit(f"TongGuOCR server is not reachable at {TongGuOCR.TONGGUOCR_URL}. Start TongGuOCR/start_server.sh in WSL first.")
+    # Starts the engine if the app's idle monitor stopped it.
+    ocr_engines.ensure_running("tongguocr")
 
     db = sqlite3.connect(DB_PATH, timeout=30.0)
     # The app's database may not have been opened since the columns were added.

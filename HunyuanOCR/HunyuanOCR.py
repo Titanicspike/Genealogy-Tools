@@ -7,6 +7,7 @@ from io import BytesIO
 from openai import OpenAI, BadRequestError
 from PIL import Image
 
+import ocr_engines
 from ocr_cleanup import collapse_repetitions
 
 client = OpenAI(
@@ -74,6 +75,12 @@ def extract_mm_token_error(error):
 
 
 def extractText(image_path):
+    """OCR one page, starting the HunyuanOCR container first if it is stopped."""
+    with ocr_engines.in_use("hunyuan"):
+        return _extract_text(image_path)
+
+
+def _extract_text(image_path):
     print("Starting OCR for image:", image_path)
 
     scale = 1.0

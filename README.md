@@ -92,6 +92,20 @@ Every new page is sent to all three engines at once. A TongGuOCR or PaddleOCR-VL
 leaves that engine's column NULL instead of failing the source; `reindex_tongguocr.py` and
 `reindex_paddleocr.py` fill in any NULL pages later and can be stopped and re-run.
 
+### Freeing the GPU when idle (`ocr_engines.py`)
+
+Running, the three engines hold about 13 GB of GPU 0 whether or not they're reading
+anything. So the app starts each engine only when a page needs it (`docker compose up -d`
+for the two container sets, `TongGuOCR/start_server.sh` through WSL for TongGuOCR) and
+stops it again after `OCR_IDLE_MINUTES` without use (default 10; `0` never stops them).
+Stopped, they hold nothing.
+
+The catch is the cold start: about 4 minutes before the first page after an idle period
+(HunyuanOCR ~2.5 min, PaddleOCR-VL and TongGuOCR ~50 s each, started one after another
+so each can size its memory). Pages after that run at full speed. The reindex scripts
+start the engine they need too; while the app is running, its idle monitor sees their
+use and stops the engine once they finish.
+
 ### Search (`main.py`)
 
 Every query runs in at least three forms: as typed, Simplified (`t2s`), and Traditional
@@ -236,6 +250,11 @@ curl http://127.0.0.1:9200/health
 ```
 
 The client targets `http://127.0.0.1:9200`; set `PADDLEOCR_URL` to point it elsewhere.
+
+You only need to bring each engine up once by hand, to download and check it. After that
+you can stop them (`docker compose stop`); the app starts and stops all three on its own
+(see *Freeing the GPU when idle*). Docker Desktop must be running, and TongGuOCR must be
+installed in the WSL distribution named by `TONGGUOCR_WSL_DISTRO` (default `Ubuntu`).
 
 ### 5. (Optional) Add the fuzzy-search confusion map
 

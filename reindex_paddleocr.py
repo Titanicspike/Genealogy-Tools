@@ -24,6 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
+import ocr_engines
 from PaddleOCRVL import PaddleOCRVL
 
 # Same database the app uses (database.DB_PATH), resolved from this file so the
@@ -78,11 +79,8 @@ def main():
     # The client prints every page's full text; that's noise for a bulk run.
     PaddleOCRVL.print = lambda *a, **k: None
 
-    if not wait_for_server():
-        raise SystemExit(
-            f"PaddleOCR-VL server is not reachable at {PaddleOCRVL.PADDLEOCR_URL}. "
-            "Start it first: cd PaddleOCRVL && docker compose up -d"
-        )
+    # Starts the engine if the app's idle monitor stopped it.
+    ocr_engines.ensure_running("paddleocr")
 
     db = sqlite3.connect(DB_PATH, timeout=30.0)
     # The app's database may not have been opened since the column was added.
