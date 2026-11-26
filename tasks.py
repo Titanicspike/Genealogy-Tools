@@ -17,6 +17,21 @@ sys.path.append(os.path.join(os.path.dirname(__file__), 'CamoufoxScraping'))
 from Scraping import FamilySearch, MCR, ztzupu
 from database import get_db
 
+# How many sources may scrape/OCR at once. The rest wait in submission order
+# with status 'Pending'. One by default: the OCR engines share a single GPU,
+# so a second source in parallel only splits it, and each scraper opens its
+# own browser or burst of downloads against a site.
+MAX_CONCURRENT_SOURCES = max(1, int(os.environ.get("MAX_CONCURRENT_SOURCES", "1")))
+_source_slots: asyncio.Semaphore | None = None
+
+
+def source_slots() -> asyncio.Semaphore:
+    """The semaphore that limits concurrent sources, created on the server's loop."""
+    global _source_slots
+    if _source_slots is None:
+        _source_slots = asyncio.Semaphore(MAX_CONCURRENT_SOURCES)
+    return _source_slots
+
 
 def format_error(exc: Exception) -> str:
     """Build a short, human-readable reason for a failed source.
@@ -108,6 +123,11 @@ def render_pdf_pages(pdf_path: str, output_dir: str) -> list[str]:
 
 async def process_uploaded_files(source_id: int, file_paths: list[str]):
     """OCR uploaded image files and rasterize PDFs into OCR-ready page images."""
+    async with source_slots():
+        await _process_uploaded_files(source_id, file_paths)
+
+
+async def _process_uploaded_files(source_id: int, file_paths: list[str]):
     try:
         db = await get_db()
         try:
@@ -183,6 +203,12 @@ def run_scraper_sync(category: str, url: str):
         raise e
 
 async def process_jiapu_source(source_id: int, url: str, category: str):
+    """Scrape a book, then OCR its pages, once a source slot is free."""
+    async with source_slots():
+        await _process_jiapu_source(source_id, url, category)
+
+
+async def _process_jiapu_source(source_id: int, url: str, category: str):
     try:
         print("1")
         # Update status to Scraping

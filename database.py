@@ -106,6 +106,24 @@ async def backfill_source_titles(db):
                 "UPDATE sources SET title = ? WHERE id = ?", (title, source_id)
             )
 
+async def fail_interrupted_sources():
+    """Mark sources left mid-pipeline by a previous server run as Failed.
+
+    Source jobs only live in the server process, so after a restart nothing will
+    ever pick up a 'Pending', 'Scraping' or 'Running OCR' row again. Failing them
+    lets the user retry, which clears any partial pages first. Call this only at
+    server startup, before any new job can start.
+    """
+    async with aiosqlite.connect(DB_PATH, timeout=30.0) as db:
+        cursor = await db.execute(
+            "UPDATE sources SET status = 'Failed', error = ?"
+            " WHERE status NOT IN ('Completed', 'Failed')",
+            ("Interrupted: the server stopped before this source finished.",),
+        )
+        await db.commit()
+        return cursor.rowcount
+
+
 async def get_db():
     db = await aiosqlite.connect(DB_PATH, timeout=30.0)
     db.row_factory = aiosqlite.Row
