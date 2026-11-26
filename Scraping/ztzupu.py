@@ -9,12 +9,12 @@ from Scraping.FolderNameSerializer import SerializeFolderName
 from Scraping.paths import ZTZUPU_DIR, book_dir
 
 # aiohttp misbehaves on Windows under the default Proactor loop (sockets can
-# raise "Event loop is closed" during teardown), so prefer the Selector loop.
-# The Windows*EventLoopPolicy classes only exist on Windows, and this runs at
-# import time, so an unguarded call breaks importing this module anywhere else.
-# Elsewhere the default loop is already selector-based and needs no override.
-if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+# raise "Event loop is closed" during teardown), so run the downloads on a
+# Selector loop. Pass it to asyncio.run rather than setting a global policy:
+# other scrapers (Camoufox) run at the same time in other threads and need
+# Windows' default Proactor loop to spawn their browser.
+# Elsewhere the default loop is already selector-based.
+LOOP_FACTORY = asyncio.SelectorEventLoop if sys.platform == "win32" else None
 # Be gentle with the site: a few downloads at a time, backing off on errors.
 MAX_CONCURRENT_DOWNLOADS = 4
 MAX_ATTEMPTS = 6
@@ -87,6 +87,8 @@ async def imageManager(imageUrls, saveDir):
         )
 
 def main(zupuIds, savePath = ZTZUPU_DIR):
+    """Scrape each book id in zupuIds; returns the directory saved for each."""
+    saved_dirs = []
     for zupuId in zupuIds:
         url = f'http://www.ztzupu.com/ztzupu/zpzoom/id/{zupuId}.html'
         response = requests.get(url, timeout=60)
@@ -100,8 +102,9 @@ def main(zupuIds, savePath = ZTZUPU_DIR):
         name = SerializeFolderName(mainPage.find('title').text)
 
         fullSavePath = book_dir(savePath, name)
-        asyncio.run(imageManager(imageUrls, fullSavePath))
-        return fullSavePath
+        asyncio.run(imageManager(imageUrls, fullSavePath), loop_factory=LOOP_FACTORY)
+        saved_dirs.append(fullSavePath)
+    return saved_dirs
 
 if __name__ == '__main__':
 

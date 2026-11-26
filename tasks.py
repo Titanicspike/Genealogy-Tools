@@ -17,20 +17,19 @@ sys.path.append(os.path.join(os.path.dirname(__file__), 'CamoufoxScraping'))
 from Scraping import FamilySearch, MCR, ztzupu
 from database import get_db
 
-# How many sources may scrape/OCR at once. The rest wait in submission order
-# with status 'Pending'. One by default: the OCR engines share a single GPU,
-# so a second source in parallel only splits it, and each scraper opens its
-# own browser or burst of downloads against a site.
-MAX_CONCURRENT_SOURCES = max(1, int(os.environ.get("MAX_CONCURRENT_SOURCES", "1")))
-_source_slots: asyncio.Semaphore | None = None
+# How many sources from one website may scrape/OCR at once. Sources from
+# different websites (FamilySearch, MyChinaRoots, ZtZupu, uploads) run side by
+# side; more from the same site wait in submission order with status 'Pending'.
+# One per site by default so each site sees a single browser or download burst.
+MAX_CONCURRENT_SOURCES_PER_SITE = max(1, int(os.environ.get("MAX_CONCURRENT_SOURCES_PER_SITE", "1")))
+_site_slots: dict[str, asyncio.Semaphore] = {}
 
 
-def source_slots() -> asyncio.Semaphore:
-    """The semaphore that limits concurrent sources, created on the server's loop."""
-    global _source_slots
-    if _source_slots is None:
-        _source_slots = asyncio.Semaphore(MAX_CONCURRENT_SOURCES)
-    return _source_slots
+def site_slots(category: str) -> asyncio.Semaphore:
+    """The semaphore limiting concurrent sources for one website (category)."""
+    if category not in _site_slots:
+        _site_slots[category] = asyncio.Semaphore(MAX_CONCURRENT_SOURCES_PER_SITE)
+    return _site_slots[category]
 
 
 def format_error(exc: Exception) -> str:
@@ -123,7 +122,7 @@ def render_pdf_pages(pdf_path: str, output_dir: str) -> list[str]:
 
 async def process_uploaded_files(source_id: int, file_paths: list[str]):
     """OCR uploaded image files and rasterize PDFs into OCR-ready page images."""
-    async with source_slots():
+    async with site_slots("Upload"):
         await _process_uploaded_files(source_id, file_paths)
 
 
@@ -175,26 +174,20 @@ async def _process_uploaded_files(source_id: int, file_paths: list[str]):
         finally:
             await db.close()
 
-def run_scraper_sync(category: str, url: str):
+def run_scraper_sync(category: str, url: str) -> str | None:
+    """Scrape one book and return the directory its page images were saved in."""
     print(f"Running scraper for {category} with URL: {url}")
-    # Camoufox drives a browser subprocess, which on Windows needs the Proactor
-    # loop; the Selector loop there cannot spawn subprocesses at all. Importing
-    # ztzupu sets a global Selector policy, so reassert Proactor before every
-    # scrape. On other platforms the default loop already handles subprocesses,
-    # and these policy classes do not exist.
-    if sys.platform == "win32":
-        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
     try:
         if category == "FamilySearch":
-            print([url])
-            return FamilySearch.main([url])
+            saved_dirs = FamilySearch.main([url])
         elif category == "MyChinaRoots":
-            return MCR.main([url.split("/")[-1]])
+            saved_dirs = MCR.main([url.split("/")[-1]])
         elif category == "ZtZupu":
-            return ztzupu.main([re.sub(r'[^\d]', '', url)])
+            saved_dirs = ztzupu.main([re.sub(r'[^\d]', '', url)])
         else:
             print(f"Unknown category {category}")
             return None
+        return saved_dirs[0] if saved_dirs else None
     except Exception as e:
         print(f"Error during scraping: {e}")
         print(f"Error type: {type(e)}")
@@ -203,8 +196,8 @@ def run_scraper_sync(category: str, url: str):
         raise e
 
 async def process_jiapu_source(source_id: int, url: str, category: str):
-    """Scrape a book, then OCR its pages, once a source slot is free."""
-    async with source_slots():
+    """Scrape a book, then OCR its pages, once its website has a free slot."""
+    async with site_slots(category):
         await _process_jiapu_source(source_id, url, category)
 
 

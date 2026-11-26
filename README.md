@@ -29,6 +29,11 @@ OCR background tasks from holding write locks.
 **Concurrency:** Scraping and OCR are slow and synchronous, so they run as FastAPI
 background tasks and push their blocking work onto threads via `asyncio.to_thread`. The
 web server stays responsive, and the UI polls `/sources` every 5 seconds to show progress.
+Only one source per website runs at a time (`MAX_CONCURRENT_SOURCES_PER_SITE`, default 1),
+so a FamilySearch book and a MyChinaRoots book run side by side, while a second FamilySearch
+book waits as `Pending`. Uploads count as their own site. These tasks live only in the
+server process, so on startup any source left unfinished by a previous run is marked
+`Failed` and can be retried.
 
 ### Data model (`database.py`)
 
@@ -60,7 +65,8 @@ The status column is how the UI reports progress, since the actual work happens 
 row, and returns immediately. In the background, `process_jiapu_source` dispatches to the
 matching scraper in `Scraping/` — FamilySearch and MyChinaRoots drive a real browser via
 [Camoufox](https://github.com/daijro/camoufox), ZtZupu is plain HTTP — and each returns a
-directory of downloaded page images. Those are then OCR'd one at a time.
+directory of downloaded page images. Those are then OCR'd one page at a time, with the
+three OCR engines reading each page in parallel.
 
 **Uploads.** `POST /upload-ocr` accepts JPG, PNG, WebP, TIFF, and PDF, capped at 50 MB per
 file, and streams them to `uploads/source_<id>/`. PDFs are rasterized page by page at 2×

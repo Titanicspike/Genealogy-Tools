@@ -13,6 +13,7 @@ async def mainAsync(ids, pathName):
     username = require("MCR_USERNAME")
     password = require("MCR_PASSWORD")
 
+    saved_dirs = []
     async with AsyncCamoufox() as browser:
         page = await browser.new_page()
         await page.goto("https://login.rpa.sccl.org/login?qurl=https://mychinarootslibrary.com%2f")
@@ -40,11 +41,12 @@ async def mainAsync(ids, pathName):
             with open(os.path.join(fullSavePath, unquote(image_src.split('?')[0].split('/')[-1])), "wb") as f:
                 f.write(response.content)
             print(f"Finished scraping {folder_name}")
-            return fullSavePath
+            saved_dirs.append(fullSavePath)
+    return saved_dirs
 
 def main(ids, pathName = MCR_DIR):
-    fullSavePath = asyncio.run(mainAsync(ids, pathName))
-    return fullSavePath
+    """Scrape each book id in ids; returns the directory saved for each."""
+    return asyncio.run(mainAsync(ids, pathName))
 
 if __name__ == '__main__':
     main(["3ff8274e-d4b7-4400-9fec-b742cabee362"])
