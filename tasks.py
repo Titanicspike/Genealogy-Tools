@@ -289,15 +289,15 @@ def run_scraper_sync(category: str, url: str, on_image=None, on_total=None, on_s
     downloads pages in parallel, out of order, so its pages are only picked up
     from the returned directory once the whole book is downloaded.
 
-    on_total(n) is called once the scraper knows how many pages the book has
-    (MyChinaRoots never says), and on_saved() as ZtZupu saves each page.
+    on_total(n) is called once the scraper knows how many pages the book has,
+    and on_saved() as ZtZupu saves each page.
     """
     print(f"Running scraper for {category} with URL: {url}")
     try:
         if category == "FamilySearch":
             saved_dirs = FamilySearch.main([url], on_image=on_image, on_total=on_total)
         elif category == "MyChinaRoots":
-            saved_dirs = MCR.main([url.split("/")[-1]], on_image=on_image)
+            saved_dirs = MCR.main([url.split("/")[-1]], on_image=on_image, on_total=on_total)
         elif category == "ZtZupu":
             saved_dirs = ztzupu.main([re.sub(r'[^\d]', '', url)], on_total=on_total, on_saved=on_saved)
         else:

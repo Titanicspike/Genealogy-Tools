@@ -1,3 +1,13 @@
+"""Download a MyChinaRoots book's page images.
+
+MyChinaRoots' viewer asks its API for each page: clan-pedigree/<book id>/
+gives the book's page count and source ID, and sources/<source id>/image/<n>/
+gives a signed link to page n's full image. So instead of clicking through the
+viewer, this signs in through the library login, opens the book's page once
+(to pick up the API headers the site's own code sends), then asks the API for
+each page and downloads it, a few pages at a time.
+"""
+
 from camoufox.async_api import AsyncCamoufox
 import os
 from Scraping.FolderNameSerializer import SerializeFolderName
@@ -6,122 +16,121 @@ from Scraping.paths import MCR_DIR, book_dir
 import asyncio
 from urllib.parse import unquote
 
-NEXT_PAGE = "[title = 'Next Page [PAGE DOWN]']"
-# How long to wait for the browser to finish loading a page's image before
-# fetching it directly instead.
-IMAGE_LOAD_TIMEOUT = 120
+SITE = "https://mychinarootslibrary-com.rpa.sccl.org"
+API = f"{SITE}/api/v1"
+LOGIN_URL = "https://login.rpa.sccl.org/login?qurl=https://mychinarootslibrary.com%2f"
+# The site's own code adds these to its API requests (an API key and the
+# member's session); without them the API treats the account as a preview-only
+# visitor and won't hand out page images.
+API_HEADERS = ("authorization", "x-mcr-session-id", "x-referrer", "x-analytics-session-id")
+# Pages downloaded at once. Pages are still reported in book order.
+PAGE_CONCURRENCY = 3
+# Page images can be several MB.
+REQUEST_TIMEOUT_MS = 120000
+# Waits before retrying a page that failed with an error or timeout.
+RETRY_WAITS_S = (5, 15, 30, 60)
 
 
-class ImageResponses:
-    """Hold on to the image responses the browser receives, keyed by URL.
+async def sign_in(page):
+    await page.goto(LOGIN_URL)
+    await page.fill("body > form:nth-child(3) > input:nth-child(4)", require("MCR_USERNAME"))
+    await page.fill("body > form:nth-child(3) > input:nth-child(7)", require("MCR_PASSWORD"))
+    await page.click("body > form:nth-child(3) > p:nth-child(9) > input:nth-child(1)")
+    await page.wait_for_load_state()
 
-    The viewer loads each page image itself, and may load the next one before
-    the scraper asks for it, so responses are recorded as they arrive and handed
-    out by URL. Saving the browser's copy avoids downloading every page twice
-    and uses the browser's own session.
-    """
 
-    def __init__(self, page):
-        self._waiting: dict[str, asyncio.Future] = {}
-        page.on("response", self._on_response)
+async def open_book(page, book_id):
+    """Open the book's page; return its title and the headers its API requests carry."""
+    async with page.expect_request(lambda r: f"/api/v1/clan-pedigree/{book_id}" in r.url) as info:
+        await page.goto(f"{SITE}/zupus/{book_id}")
+    request_headers = await (await info.value).all_headers()
+    title = await page.locator(".zupu-info > div:nth-child(1) > h1:nth-child(1)").inner_text()
+    return title, {k: v for k, v in request_headers.items() if k in API_HEADERS}
 
-    def _future(self, url: str) -> asyncio.Future:
-        if url not in self._waiting:
-            self._waiting[url] = asyncio.get_running_loop().create_future()
-        return self._waiting[url]
 
-    def _on_response(self, response):
-        if response.request.resource_type != "image":
-            return
-        # A redirect is reported as a response of its own; wait for the final one.
-        if 300 <= response.status < 400:
-            return
-        # Record it under every URL in a redirect chain, so it is found by the
-        # URL the <img> asked for as well as the one that finally answered.
-        request = response.request
-        while request is not None:
-            future = self._future(request.url)
-            if not future.done():
-                future.set_result(response)
-            request = request.redirected_from
-
-    async def get(self, url: str, timeout: float):
-        """The browser's response for url, or None if it doesn't load in time."""
+async def download_page(api, headers, source_id, number, save_dir):
+    """Download page `number` of the source and return where it was saved."""
+    last_error = None
+    for wait in (*RETRY_WAITS_S, None):
         try:
-            return await asyncio.wait_for(asyncio.shield(self._future(url)), timeout)
-        except asyncio.TimeoutError:
-            return None
-        finally:
-            # Drop it once handled, so a long book doesn't keep every page in memory.
-            if self._waiting.get(url) is not None and self._waiting[url].done():
-                del self._waiting[url]
+            response = await api.get(f"{API}/sources/{source_id}/image/{number}/",
+                                     headers=headers, timeout=REQUEST_TIMEOUT_MS)
+            if response.ok:
+                image_url = (await response.json())["url"]
+                image = await api.get(image_url, timeout=REQUEST_TIMEOUT_MS)
+                if image.ok:
+                    # Named as before: the file name in the image's URL.
+                    path = os.path.join(save_dir, unquote(image_url.split("?")[0].split("/")[-1]))
+                    with open(path, "wb") as f:
+                        f.write(await image.body())
+                    return path
+                last_error = f"image HTTP {image.status}"
+            else:
+                last_error = f"HTTP {response.status} {(await response.text())[:100]}"
+        except Exception as e:  # a timeout or dropped connection
+            last_error = e
+        if wait is not None:
+            print(f"Page {number} failed ({last_error}); retrying in {wait}s")
+            await asyncio.sleep(wait)
+    raise RuntimeError(f"Could not download page {number}: {last_error}")
 
 
-async def save_current_image(page, responses: ImageResponses, save_dir: str) -> str:
-    """Save the image the viewer is showing and return where it was saved.
+async def download_book(api, headers, source_id, count, save_dir, on_image=None):
+    """Download pages 1..count, PAGE_CONCURRENCY at a time, reporting them in order."""
+    slots = asyncio.Semaphore(PAGE_CONCURRENCY)
 
-    Uses the copy the browser already loaded. If none arrives (for instance the
-    browser served it from cache without a network response), fetch it once
-    through the browser's session instead.
-    """
-    # currentSrc/src give the absolute URL the browser actually requested.
-    image_src = await page.locator(".image").evaluate("img => img.currentSrc || img.src")
-    print(image_src)
-    response = await responses.get(image_src, IMAGE_LOAD_TIMEOUT)
-    if response is None:
-        print(f"No browser response for {image_src}; fetching it directly")
-        response = await page.context.request.get(image_src, timeout=IMAGE_LOAD_TIMEOUT * 1000)
-    if not response.ok:
-        raise RuntimeError(f"Image {image_src} returned HTTP {response.status}")
-    body = await response.body()
-    path = os.path.join(save_dir, unquote(image_src.split('?')[0].split('/')[-1]))
-    with open(path, "wb") as f:
-        f.write(body)
-    return path
+    async def fetch(number):
+        async with slots:
+            return await download_page(api, headers, source_id, number, save_dir)
+
+    tasks = [asyncio.create_task(fetch(number)) for number in range(1, count + 1)]
+    try:
+        for task in tasks:
+            path = await task
+            if on_image:
+                on_image(path)
+    finally:
+        # On a failure (or on_image stopping the scrape), drop the rest.
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
-async def scrape_book_pages(page, responses: ImageResponses, save_dir: str, on_image=None):
-    """Save every page of the open viewer, from the current page to the last."""
-    while True:
-        image_path = await save_current_image(page, responses, save_dir)
-        if on_image:
-            on_image(image_path)
-        if not await page.is_visible(NEXT_PAGE):
-            break
-        await page.click(NEXT_PAGE)
-
-
-async def mainAsync(ids, pathName, on_image=None):
-    username = require("MCR_USERNAME")
-    password = require("MCR_PASSWORD")
-
+async def mainAsync(ids, pathName, on_image=None, on_total=None):
     saved_dirs = []
     async with AsyncCamoufox() as browser:
         page = await browser.new_page()
-        responses = ImageResponses(page)
-        await page.goto("https://login.rpa.sccl.org/login?qurl=https://mychinarootslibrary.com%2f")
-        await page.fill("body > form:nth-child(3) > input:nth-child(4)", username)
-        await page.fill("body > form:nth-child(3) > input:nth-child(7)", password)
-        await page.click("body > form:nth-child(3) > p:nth-child(9) > input:nth-child(1)")
+        await sign_in(page)
+        api = page.context.request
         for id in ids:
-            await page.goto(f"https://mychinarootslibrary-com.rpa.sccl.org/zupus/{id}")
-            folder_name = await page.locator(".zupu-info > div:nth-child(1) > h1:nth-child(1)").inner_text()
-            folder_name = SerializeFolderName(folder_name)
-            print(folder_name)
+            title, headers = await open_book(page, id)
+            response = await api.get(f"{API}/clan-pedigree/{id}/", headers=headers, timeout=REQUEST_TIMEOUT_MS)
+            if not response.ok:
+                raise RuntimeError(f"MyChinaRoots couldn't find book {id} (HTTP {response.status})")
+            book = await response.json()
+            if not book.get("user_has_full_access"):
+                raise RuntimeError(
+                    "This MyChinaRoots account only has the free preview of this book "
+                    f"({book.get('free_preview_images_count')} pages), so it can't be downloaded"
+                )
+            count = book["images_count"]
+            folder_name = SerializeFolderName(title)
+            print(f"Scraping {folder_name}: {count} pages")
             fullSavePath = book_dir(pathName, folder_name)
-            await page.click(".zupu-info > div:nth-child(1) > div:nth-child(3) > button:nth-child(1) > div:nth-child(1)")
-            await page.locator('.viewport').wait_for(state='visible', timeout=100000)
-            await scrape_book_pages(page, responses, fullSavePath, on_image)
+            if on_total:
+                on_total(count)
+            await download_book(api, headers, book["source_object_id"], count, fullSavePath, on_image)
             print(f"Finished scraping {folder_name}")
             saved_dirs.append(fullSavePath)
     return saved_dirs
 
-def main(ids, pathName = MCR_DIR, on_image=None):
+def main(ids, pathName = MCR_DIR, on_image=None, on_total=None):
     """Scrape each book id in ids; returns the directory saved for each.
 
-    on_image(path), if given, is called as each page image is saved.
+    on_image(path), if given, is called as each page image is saved, in page
+    order, and on_total(n) with a book's page count before its download starts.
     """
-    return asyncio.run(mainAsync(ids, pathName, on_image))
+    return asyncio.run(mainAsync(ids, pathName, on_image, on_total))
 
 if __name__ == '__main__':
     main(["3ff8274e-d4b7-4400-9fec-b742cabee362"])
