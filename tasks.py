@@ -23,6 +23,11 @@ from database import get_db
 # One per site by default so each site sees a single browser or download burst.
 MAX_CONCURRENT_SOURCES_PER_SITE = max(1, int(os.environ.get("MAX_CONCURRENT_SOURCES_PER_SITE", "1")))
 _site_slots: dict[str, asyncio.Semaphore] = {}
+# How many pages of one source are read at once. All three engines share one
+# GPU, so this only helps until the GPU is saturated: on an RTX 5060 Ti, 4 pages
+# in flight read ~25% faster than 1 (26 vs 35 s/page), while 2 was no faster.
+# TongGuOCR reads one page at a time and queues the rest.
+PAGE_OCR_CONCURRENCY = max(1, int(os.environ.get("PAGE_OCR_CONCURRENCY", "4")))
 
 
 def site_slots(category: str) -> asyncio.Semaphore:
@@ -70,7 +75,8 @@ async def run_paddleocr(image_path: str) -> str | None:
         return None
 
 
-async def insert_page(source_id: int, image_path: str):
+async def ocr_page(image_path: str) -> tuple:
+    """Read one page with all three engines: (Hunyuan, TongGuOCR text, TongGuOCR layout, PaddleOCR-VL)."""
     # Engines stopped for being idle are started one at a time first; starting
     # them all at once from the parallel calls below can starve one of memory.
     await asyncio.to_thread(ocr_engines.ensure_all)
@@ -80,17 +86,51 @@ async def insert_page(source_id: int, image_path: str):
         run_tongguocr(image_path),
         run_paddleocr(image_path),
     )
+    return ocr_text, tongguocr_text, tongguocr_layout, paddleocr_text
+
+
+async def save_page(source_id: int, image_path: str, ocr_results: tuple):
     # Open a fresh connection for each image to avoid long locks
     db = await get_db()
     try:
         await db.execute(
             "INSERT INTO pages (source_id, image_path, ocr_text, tongguocr_text, tongguocr_layout, paddleocr_text)"
             " VALUES (?, ?, ?, ?, ?, ?)",
-            (source_id, image_path, ocr_text, tongguocr_text, tongguocr_layout, paddleocr_text),
+            (source_id, image_path, *ocr_results),
         )
         await db.commit()
     finally:
         await db.close()
+
+
+async def ocr_pages(source_id: int, image_paths: list[str]):
+    """OCR a source's pages PAGE_OCR_CONCURRENCY at a time, saving them in page order.
+
+    The viewer and text export order pages by row id, so a page that finishes
+    early waits for the pages before it to be saved first. If a page fails, the
+    pages still being read are abandoned and the error fails the source.
+    """
+    slots = asyncio.Semaphore(PAGE_OCR_CONCURRENCY)
+
+    async def read(image_path: str) -> tuple:
+        async with slots:
+            print(f"Processing {image_path}...")
+            return await ocr_page(image_path)
+
+    reads = [asyncio.create_task(read(path)) for path in image_paths]
+    try:
+        for image_path, page_read in zip(image_paths, reads):
+            await save_page(source_id, image_path, await page_read)
+    finally:
+        for page_read in reads:
+            page_read.cancel()
+        # Collect the cancelled reads so their errors aren't reported as unhandled.
+        await asyncio.gather(*reads, return_exceptions=True)
+
+
+def page_sort_key(filename: str) -> list:
+    """Sort 2.jpg before 10.jpg, so numbered pages keep the book's order."""
+    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", filename)]
 
 
 async def perform_ocr(source_id: int, image_dir: str):
@@ -99,12 +139,12 @@ async def perform_ocr(source_id: int, image_dir: str):
         return
 
     print(f"Running OCR on images in {image_dir}")
-    
-    for filename in os.listdir(image_dir):
-        if filename.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):
-            image_path = os.path.join(image_dir, filename)
-            print(f"Processing {image_path}...")
-            await insert_page(source_id, image_path)
+    image_paths = [
+        os.path.join(image_dir, filename)
+        for filename in sorted(os.listdir(image_dir), key=page_sort_key)
+        if filename.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))
+    ]
+    await ocr_pages(source_id, image_paths)
 
 
 def render_pdf_pages(pdf_path: str, output_dir: str) -> list[str]:
@@ -153,8 +193,7 @@ async def _process_uploaded_files(source_id: int, file_paths: list[str]):
         finally:
             await db.close()
 
-        for image_path in image_paths:
-            await insert_page(source_id, image_path)
+        await ocr_pages(source_id, image_paths)
 
         db = await get_db()
         try:

@@ -65,8 +65,10 @@ The status column is how the UI reports progress, since the actual work happens 
 row, and returns immediately. In the background, `process_jiapu_source` dispatches to the
 matching scraper in `Scraping/` — FamilySearch and MyChinaRoots drive a real browser via
 [Camoufox](https://github.com/daijro/camoufox), ZtZupu is plain HTTP — and each returns a
-directory of downloaded page images. Those are then OCR'd one page at a time, with the
-three OCR engines reading each page in parallel.
+directory of downloaded page images. Those are then OCR'd up to `PAGE_OCR_CONCURRENCY`
+pages at a time (default 4), with the three OCR engines reading each page in parallel.
+Pages are saved in book order regardless of which finishes first, since the viewer orders
+pages by row id.
 
 **Uploads.** `POST /upload-ocr` accepts JPG, PNG, WebP, TIFF, and PDF, capped at 50 MB per
 file, and streams them to `uploads/source_<id>/`. PDFs are rasterized page by page at 2×
