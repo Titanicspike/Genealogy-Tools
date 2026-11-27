@@ -15,15 +15,16 @@ DOWNLOAD_TIMEOUT_MS = 1000
 
 
 def download_current_image(page, save_dir):
-    """Download the image the viewer is showing, or raise if it never arrives."""
+    """Download the image the viewer is showing and return its path; raise if it never arrives."""
     last_error = None
     for _ in range(MAX_DOWNLOAD_ATTEMPTS):
         try:
             with page.expect_download(timeout=DOWNLOAD_TIMEOUT_MS) as download_info:
                 page.click(DOWNLOAD_BUTTON, timeout=DOWNLOAD_TIMEOUT_MS)
             download = download_info.value
-            download.save_as(os.path.join(save_dir, download.suggested_filename))
-            return
+            path = os.path.join(save_dir, download.suggested_filename)
+            download.save_as(path)
+            return path
         except Exception as e:
             last_error = e
     raise RuntimeError(
@@ -31,8 +32,11 @@ def download_current_image(page, save_dir):
     )
 
 
-def main(ids, savePath = FAMILYSEARCH_DIR):
-    """Scrape each book URL in ids; returns the directory saved for each."""
+def main(ids, savePath = FAMILYSEARCH_DIR, on_image=None):
+    """Scrape each book URL in ids; returns the directory saved for each.
+
+    on_image(path), if given, is called as each page image is saved.
+    """
     username = require("FAMILYSEARCH_USERNAME")
     password = require("FAMILYSEARCH_PASSWORD")
     saved_dirs = []
@@ -56,7 +60,9 @@ def main(ids, savePath = FAMILYSEARCH_DIR):
             print(f"Scraping {folder_name}")
             page.fill("[aria-label='Enter Image number']", "1")
             while True:
-                download_current_image(page, fullSavePath)
+                image_path = download_current_image(page, fullSavePath)
+                if on_image:
+                    on_image(image_path)
                 next_button = page.locator(NEXT_BUTTON)
                 if next_button.get_attribute('aria-disabled') != 'false':
                     break

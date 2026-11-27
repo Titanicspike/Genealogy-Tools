@@ -9,7 +9,18 @@ import requests
 from urllib.parse import unquote
 
 
-async def mainAsync(ids, pathName):
+def save_image(image_src, save_dir):
+    """Download the page image the viewer is showing; returns where it was saved."""
+    print(image_src)
+    response = requests.get(image_src, timeout=120)
+    response.raise_for_status()
+    path = os.path.join(save_dir, unquote(image_src.split('?')[0].split('/')[-1]))
+    with open(path, "wb") as f:
+        f.write(response.content)
+    return path
+
+
+async def mainAsync(ids, pathName, on_image=None):
     username = require("MCR_USERNAME")
     password = require("MCR_PASSWORD")
 
@@ -28,25 +39,23 @@ async def mainAsync(ids, pathName):
             fullSavePath = book_dir(pathName, folder_name)
             await page.click(".zupu-info > div:nth-child(1) > div:nth-child(3) > button:nth-child(1) > div:nth-child(1)")
             await page.locator('.viewport').wait_for(state='visible', timeout=100000)
-            while await page.is_visible("[title = 'Next Page [PAGE DOWN]']"):
-                image_src = await page.locator(".image").get_attribute('src')
-                print(image_src)
-                response = requests.get(image_src)
-                with open(os.path.join(fullSavePath, unquote(image_src.split('?')[0].split('/')[-1])), "wb") as f:
-                    f.write(response.content)
+            while True:
+                image_path = save_image(await page.locator(".image").get_attribute('src'), fullSavePath)
+                if on_image:
+                    on_image(image_path)
+                if not await page.is_visible("[title = 'Next Page [PAGE DOWN]']"):
+                    break
                 await page.click("[title = 'Next Page [PAGE DOWN]']")
-            image_src = await page.locator(".image").get_attribute('src')
-            print(image_src)
-            response = requests.get(image_src)
-            with open(os.path.join(fullSavePath, unquote(image_src.split('?')[0].split('/')[-1])), "wb") as f:
-                f.write(response.content)
             print(f"Finished scraping {folder_name}")
             saved_dirs.append(fullSavePath)
     return saved_dirs
 
-def main(ids, pathName = MCR_DIR):
-    """Scrape each book id in ids; returns the directory saved for each."""
-    return asyncio.run(mainAsync(ids, pathName))
+def main(ids, pathName = MCR_DIR, on_image=None):
+    """Scrape each book id in ids; returns the directory saved for each.
+
+    on_image(path), if given, is called as each page image is saved.
+    """
+    return asyncio.run(mainAsync(ids, pathName, on_image))
 
 if __name__ == '__main__':
     main(["3ff8274e-d4b7-4400-9fec-b742cabee362"])

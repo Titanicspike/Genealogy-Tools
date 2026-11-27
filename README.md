@@ -55,8 +55,11 @@ Sources with no pages (a failed scrape) have no title and fall back to displayin
 Uploads are excluded from the backfill, since their parent directory is just `source_<id>`;
 they continue to show the uploaded filename.
 
-A source's `status` walks through `Pending` → `Scraping` → `Running OCR` → `Completed`,
-or lands on `Failed`. Uploads use `Saving upload` → `Preparing files` → `Running OCR`.
+A source's `status` walks through `Pending` → `Scraping` → `Scraping + OCR` → `Running OCR`
+→ `Completed`, or lands on `Failed`. FamilySearch and MyChinaRoots report each page as it
+downloads, so OCR starts on the first page while the rest of the book is still downloading
+(`Scraping + OCR`). ZtZupu downloads pages in parallel and out of order, so its pages are
+OCR'd once the whole book is down. Uploads use `Saving upload` → `Preparing files` → `Running OCR`.
 The status column is how the UI reports progress, since the actual work happens out of band.
 
 ### Pipelines (`tasks.py`)
