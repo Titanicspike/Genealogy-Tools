@@ -61,8 +61,9 @@
 
     <div id="source-table"
          hx-get="/sources/table"
-         {# Poll only while a source is running, so the page thumbnails aren't redrawn for nothing. #}
-         hx-trigger="load, every 5s [document.querySelector('#source-table [data-active]')], refresh, change from:#browse-filters, input changed delay:300ms from:#browse-text"
+         {# Poll only while a source is running, so the page thumbnails aren't redrawn for nothing.
+            htmx 1.9 only fires when the filter is exactly true, hence the !!. #}
+         hx-trigger="load, every 5s [!!document.querySelector('#source-table [data-active]')], refresh, change from:#browse-filters, input changed delay:300ms from:#browse-text"
          hx-include="#browse-filters"
          {# Don't redraw the table under an open topic dropdown. #}
          hx-on::before-request="if (event.target === this && this.contains(document.activeElement) && document.activeElement.tagName === 'SELECT') event.preventDefault();">

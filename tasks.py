@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import os
 import sys
 import traceback
@@ -358,7 +359,8 @@ async def _process_jiapu_source(source_id: int, url: str, category: str):
 
     def on_total(total: int):
         """Called from the scraper's thread once it knows the book's page count."""
-        loop.call_soon_threadsafe(update_progress, source_id, download_total=total)
+        # call_soon_threadsafe takes no keyword arguments, so bind them first.
+        loop.call_soon_threadsafe(functools.partial(update_progress, source_id, download_total=total))
 
     def on_saved():
         """Called from ZtZupu's thread for each page saved (it has no on_image)."""
