@@ -1,160 +1,157 @@
+"""Download a FamilySearch book's page images.
+
+The image viewer gets the whole image group's list of image IDs ("apids") in
+one request as it loads, and its Download button just fetches
+.../apid:<id>/$dist (the full-size JPEG) using the signed-in session. So
+instead of clicking through the viewer, this signs in, opens the book's link
+once to capture that list, and requests each image directly through the same
+browser session.
+"""
+
 from camoufox.sync_api import Camoufox
 import time
 import os
+from urllib.parse import urlparse, parse_qs
 from Scraping.FolderNameSerializer import SerializeFolderName
 from Scraping.credentials import require
 from Scraping.paths import FAMILYSEARCH_DIR, book_dir
 
 
-DOWNLOAD_BUTTON = "//button[@aria-label='Download']"
-# The Next Image button only appears while the mouse is over the image, so
-# move between images by typing the number into the page box instead.
-IMAGE_NUMBER_BOX = "[aria-label='Enter Image number']"
-# How long to wait for the viewer to switch images after entering a number.
-NAVIGATION_TIMEOUT_MS = 15000
-# How long to wait for an image group's list of items ("Images: 84-249").
-ITEM_LIST_TIMEOUT_MS = 5000
-# The Download button isn't ready the moment a page loads, so poll it with
-# short timeouts; give up on the page after about this many tries.
-MAX_DOWNLOAD_ATTEMPTS = 40
-DOWNLOAD_TIMEOUT_MS = 1000
+# The viewer requests the image group's details (image IDs, items, titles) here.
+ORCHESTRATION_PATH = "/records/images/orchestration"
+# The full-size image, as the viewer's Download button fetches it.
+IMAGE_URL = "https://sg30p0.familysearch.org/service/records/storage/deepzoomcloud/dz/v1/apid:{apid}/$dist"
+# How long to wait for the viewer to fetch the image list after opening a link.
+IMAGE_LIST_TIMEOUT_S = 30
+# After a burst of downloads FamilySearch slows them down, sometimes to many
+# seconds each, so allow each image plenty of time.
+IMAGE_TIMEOUT_MS = 120000
+# Waits before retrying an image that failed with a server error or timeout.
+RETRY_WAITS_S = (5, 15, 30, 60)
 
 
-def is_restricted(page):
-    """Whether the viewer is showing FamilySearch's "Image Restricted" notice instead of an image."""
-    return page.get_by_text("Image Restricted", exact=True).first.is_visible()
+class Restricted(Exception):
+    """FamilySearch refused the image: it can't be viewed online (HTTP 403)."""
 
 
-def download_current_image(page, save_dir):
-    """Download the image the viewer is showing and return its path.
-
-    Returns None for a restricted image, which has no Download button; raises
-    if an unrestricted image never downloads.
-    """
-    last_error = None
-    restricted_checks = 0
-    for _ in range(MAX_DOWNLOAD_ATTEMPTS):
-        try:
-            with page.expect_download(timeout=DOWNLOAD_TIMEOUT_MS) as download_info:
-                page.click(DOWNLOAD_BUTTON, timeout=DOWNLOAD_TIMEOUT_MS)
-            download = download_info.value
-            path = os.path.join(save_dir, download.suggested_filename)
-            download.save_as(path)
-            return path
-        except Exception as e:
-            last_error = e
-        # Seen on two tries in a row, so a notice left over from the previous
-        # image while the viewer switches isn't mistaken for this one's.
-        restricted_checks = restricted_checks + 1 if is_restricted(page) else 0
-        if restricted_checks >= 2:
-            return None
-    raise RuntimeError(
-        f"Could not download image after {MAX_DOWNLOAD_ATTEMPTS} attempts: {last_error}"
-    )
-
-
-def image_count(page):
-    """Return how many images the book has: the page box's max, or the "of N" beside it."""
-    box = page.locator(IMAGE_NUMBER_BOX)
-    box.wait_for(timeout=NAVIGATION_TIMEOUT_MS)
-    total = box.get_attribute("max")
-    if not (total and total.isdigit()):
-        total = box.evaluate(
-            """el => {
-                for (let node = el.parentElement; node; node = node.parentElement) {
-                    const m = node.innerText.match(/of\\s*([\\d,]+)/i);
-                    if (m) return m[1].replace(/,/g, '');
-                }
-                return null;
-            }"""
-        )
-    if not (total and total.isdigit()):
-        raise RuntimeError("Could not find the number of images next to the page box")
-    return int(total)
-
-
-def item_range(page, total):
-    """The first and last image numbers of the book the link points to.
-
-    A link can open a whole image group: several books filmed together (some
-    of them restricted), listed in the side panel as "Images: 1-83",
-    "Images: 84-249" and so on. Keep to the item holding the image the link
-    opened on. A link to a single item has no such list, so it's 1 to total.
-    """
+def open_image_group(page, url):
+    """Open a book's link and return the image group the viewer loads for it."""
+    responses = []
+    def collect(response):
+        if ORCHESTRATION_PATH in response.url:
+            responses.append(response)
+    page.on("response", collect)
     try:
-        page.wait_for_function(
-            "() => [...document.querySelectorAll('p')].some(p => /^Images:\\s*\\d/.test(p.textContent))",
-            timeout=ITEM_LIST_TIMEOUT_MS,
-        )
-    except Exception:
-        return 1, total
-    ranges = page.locator("p").evaluate_all(
-        """els => els
-            .map(el => el.textContent.match(/^Images:\\s*(\\d+)\\s*-\\s*(\\d+)/))
-            .filter(Boolean)
-            .map(m => [parseInt(m[1]), parseInt(m[2])])"""
-    )
-    current = page.locator(IMAGE_NUMBER_BOX).input_value()
-    current = int(current) if current.isdigit() else 1
-    for first, last in ranges:
-        if first <= current <= last:
-            return first, last
-    return 1, total
+        page.goto(url)
+        deadline = time.monotonic() + IMAGE_LIST_TIMEOUT_S
+        seen = 0
+        while time.monotonic() < deadline:
+            # wait_for_timeout, not time.sleep, so the response events are delivered.
+            page.wait_for_timeout(500)
+            for response in responses[seen:]:
+                seen += 1
+                try:
+                    group = (response.json().get("data") or {}).get("group")
+                except Exception:
+                    continue
+                if group and group.get("imageApids"):
+                    return group
+    finally:
+        page.remove_listener("response", collect)
+    raise RuntimeError(f"FamilySearch's viewer didn't load the image list within {IMAGE_LIST_TIMEOUT_S}s")
 
 
-def go_to_image(page, number):
-    """Show image `number` by typing it into the page box, and wait for the viewer to switch."""
-    previous_url = page.url
-    box = page.locator(IMAGE_NUMBER_BOX)
-    box.fill(str(number))
-    box.press("Enter")
-    # Each image has its own ark ID in the URL, so a URL change means it switched.
-    page.wait_for_url(lambda url: url != previous_url, timeout=NAVIGATION_TIMEOUT_MS)
+def item_images(group, page_url):
+    """The image IDs of the book the link points to, with their image numbers in the group.
+
+    An image group can hold several books filmed together (some of them
+    restricted), each listed as a child group; the viewer's URL names the one
+    being viewed as groupId. A group with no such books is one book.
+    """
+    all_apids = group["imageApids"]
+    number = {apid: i for i, apid in enumerate(all_apids, 1)}
+    group_id = parse_qs(urlparse(page_url).query).get("groupId", [None])[0]
+    apids = all_apids
+    for child in group.get("childGroups") or []:
+        if child.get("id") == group_id and child.get("imageApids"):
+            apids = child["imageApids"]
+            break
+    else:
+        if group.get("childGroups"):
+            print(f"Item {group_id} not found in the image group; downloading all {len(all_apids)} images")
+    return [(number[apid], apid) for apid in apids]
+
+
+def download_image(page, apid, path):
+    """Save one full-size image to path; raise Restricted if FamilySearch refuses it."""
+    last_error = None
+    for wait in (*RETRY_WAITS_S, None):
+        try:
+            response = page.request.get(IMAGE_URL.format(apid=apid), timeout=IMAGE_TIMEOUT_MS)
+        except Exception as e:  # a timeout or dropped connection
+            last_error = e
+        else:
+            if response.ok:
+                with open(path, "wb") as f:
+                    f.write(response.body())
+                return
+            if response.status == 403:
+                raise Restricted(apid)
+            if response.status == 401:
+                raise RuntimeError("FamilySearch says the session isn't signed in (HTTP 401)")
+            last_error = f"HTTP {response.status}"
+        if wait is not None:
+            print(f"Image {apid} failed ({last_error}); retrying in {wait}s")
+            time.sleep(wait)
+    raise RuntimeError(f"Could not download image {apid}: {last_error}")
+
+
+def sign_in(page):
+    print("Signing in")
+    page.goto("https://familysearch.org/")
+    time.sleep(3)
+    page.click("#signInLink")
+    time.sleep(3)
+    page.fill("#userName", require("FAMILYSEARCH_USERNAME"))
+    page.fill("#password", require("FAMILYSEARCH_PASSWORD"))
+    page.click("#login")
+    # Wait to be sent back from the sign-in site, or the first book's page
+    # load can be cut off by that redirect.
+    page.wait_for_url(lambda url: "ident.familysearch.org" not in url, timeout=30000)
+    page.wait_for_load_state()
+    time.sleep(3)
+    print("Signed in")
 
 
 def main(ids, savePath = FAMILYSEARCH_DIR, on_image=None, on_total=None):
     """Scrape each book URL in ids; returns the directory saved for each.
 
     on_image(path), if given, is called as each page image is saved, and
-    on_total(n) with a book's image count before its download starts.
+    on_total(n) with a book's image count before its download starts (and
+    again, lowered, as restricted images are skipped).
     """
-    username = require("FAMILYSEARCH_USERNAME")
-    password = require("FAMILYSEARCH_PASSWORD")
     saved_dirs = []
     with Camoufox() as browser:
         page = browser.new_page()
-        print("Signing in")
-        page.goto("https://familysearch.org/")
-        time.sleep(3)
-        page.click("#signInLink")
-        time.sleep(3)
-        page.fill("#userName", username)
-        page.fill("#password", password)
-        page.click("#login")
-        # Wait to be sent back from the sign-in site, or the first book's page
-        # load can be cut off by that redirect.
-        page.wait_for_url(lambda url: "ident.familysearch.org" not in url, timeout=30000)
-        page.wait_for_load_state()
-        time.sleep(3)
-        print("Signed in")
+        sign_in(page)
         for id in ids:
-            page.goto(id)
-            time.sleep(3)
+            group = open_image_group(page, id)
             folder_name = page.locator("h1.textBaseCss_tt5gnaq > span:nth-child(1)").inner_text()
             fullSavePath = book_dir(savePath, SerializeFolderName(folder_name))
-            print(f"Scraping {folder_name}")
-            first, last = item_range(page, image_count(page))
-            total = last - first + 1
-            print(f"{total} images (images {first}-{last})")
+            images = item_images(group, page.url)
+            total = len(images)
+            print(f"Scraping {folder_name}: {total} images "
+                  f"(images {images[0][0]}-{images[-1][0]} of {len(group['imageApids'])})")
             if on_total:
                 on_total(total)
             restricted = 0
-            for number in range(first, last + 1):
-                box_value = page.locator(IMAGE_NUMBER_BOX).input_value()
-                if box_value != str(number):
-                    go_to_image(page, number)
-                image_path = download_current_image(page, fullSavePath)
-                if image_path is None:
+            for number, apid in images:
+                # Named as the viewer's Download button names them: film number
+                # and the image's number in the whole group.
+                path = os.path.join(fullSavePath, f"{group['imageGroupNumber']}_{number:05d}.jpg")
+                try:
+                    download_image(page, apid, path)
+                except Restricted:
                     restricted += 1
                     print(f"Image {number} is restricted; skipping it")
                     # Keep the page count to what can actually be downloaded.
@@ -162,7 +159,7 @@ def main(ids, savePath = FAMILYSEARCH_DIR, on_image=None, on_total=None):
                         on_total(total - restricted)
                     continue
                 if on_image:
-                    on_image(image_path)
+                    on_image(path)
             if restricted == total:
                 raise RuntimeError(f"All {total} images of {folder_name} are restricted")
             skipped = f", skipped {restricted} restricted" if restricted else ""
