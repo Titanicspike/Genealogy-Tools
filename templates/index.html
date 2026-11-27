@@ -1,31 +1,6 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Jiapu Source Manager</title>
-    <!-- Tailwind CSS -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <!-- HTMX -->
-    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700&display=swap');
-        body {
-            font-family: 'Inter', 'Noto Sans TC', sans-serif;
-            background-color: #f8fafc;
-        }
-    </style>
-</head>
-<body class="text-slate-800 antialiased h-screen flex flex-col">
+{% extends "base.html" %}
 
-    <!-- Header -->
-    <header class="bg-indigo-600 text-white shadow-md">
-        <div class="container mx-auto px-6 py-4 flex justify-between items-center">
-            <h1 class="text-2xl font-bold tracking-tight">Jiapu Source Manager</h1>
-            <div class="text-indigo-200 text-sm">Organize & Search Genealogy Books</div>
-        </div>
-    </header>
-
+{% block content %}
     <main class="container mx-auto px-6 py-8 flex-grow flex flex-col md:flex-row gap-8">
         
         <!-- Left Column: Add Source & List -->
@@ -88,6 +63,8 @@
                 <div class="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
                     <h2 class="text-lg font-semibold text-slate-700">Your Sources</h2>
                     <div class="flex items-center gap-3">
+                        <a href="/browse" class="text-xs font-medium text-indigo-700 hover:text-indigo-900"
+                           onclick="const t = document.getElementById('topic-select'); if (t && t.value) this.href = '/browse?topic_id=' + t.value;">Open full view →</a>
                         <span class="text-xs font-medium px-2.5 py-1 bg-indigo-100 text-indigo-700 rounded-full">Auto-updating</span>
                         <button onclick="if(confirm('Are you sure you want to clear the entire database? This action cannot be undone.')) { htmx.ajax('POST', '/clear-database', '#source-list'); }" class="text-xs font-medium px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg transition-colors cursor-pointer">
                             Clear DB
@@ -112,7 +89,12 @@
         <div class="w-full md:w-1/2 flex flex-col gap-6">
             
             <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6 flex flex-col h-full">
-                <h2 class="text-lg font-semibold mb-4 text-slate-700">Fuzzy Search OCR Text</h2>
+                <div class="flex items-center justify-between gap-3 mb-4">
+                    <h2 class="text-lg font-semibold text-slate-700">Fuzzy Search OCR Text</h2>
+                    {# Carry the current query, fuzzy setting and topic over to the search page. #}
+                    <a href="/find" class="shrink-0 text-xs font-medium text-indigo-700 hover:text-indigo-900"
+                       onclick="const p = new URLSearchParams(); const q = document.getElementById('search-input').value.trim(); if (q) p.set('query', q); if (document.querySelector('#search-form [name=fuzzy]').checked) p.set('fuzzy', 'true'); const t = document.getElementById('topic-select'); if (t && t.value) p.set('topic_id', t.value); this.href = '/find' + (p.toString() ? '?' + p : '');">Open search page →</a>
+                </div>
                 <p class="text-sm text-slate-500 mb-4">Search characters. Automatically matches Simplified &amp; Traditional variants. Select a topic on the left to search only that topic's sources.</p>
 
                 <!-- Search runs over htmx; Enter must not submit the form natively, which
@@ -163,23 +145,4 @@
         </div>
 
     </main>
-
-    <script>
-        async function copySourceText(sourceId, button) {
-            const originalLabel = button.textContent;
-            try {
-                const response = await fetch(`/sources/${sourceId}/text`);
-                if (!response.ok) throw new Error('Unable to retrieve source text');
-
-                await navigator.clipboard.writeText(await response.text());
-                button.textContent = 'Copied!';
-            } catch (error) {
-                console.error(error);
-                button.textContent = 'Copy failed';
-            }
-
-            window.setTimeout(() => { button.textContent = originalLabel; }, 2000);
-        }
-    </script>
-</body>
-</html>
+{% endblock %}

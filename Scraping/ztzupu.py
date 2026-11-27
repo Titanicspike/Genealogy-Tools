@@ -37,7 +37,7 @@ def backoff_seconds(attempt: int, retry_after: str | None = None) -> float:
     return delay * random.uniform(0.5, 1.0)
 
 
-async def getImage(session, slots, url, num, saveDir):
+async def getImage(session, slots, url, num, saveDir, on_saved=None):
     """Download one page image, retrying transient failures with backoff.
 
     Raises DownloadError when the page can't be fetched, so the source fails
@@ -60,6 +60,8 @@ async def getImage(session, slots, url, num, saveDir):
                     with open(path, 'wb') as f:
                         f.write(body)
                     print("Saved image to: " + path)
+                    if on_saved:
+                        on_saved()
                     return
                 last_error = f"HTTP {response.status}"
                 if response.status not in RETRYABLE_STATUSES:
@@ -73,11 +75,11 @@ async def getImage(session, slots, url, num, saveDir):
             await asyncio.sleep(delay)
     raise DownloadError(f"{url} failed after {MAX_ATTEMPTS} attempts ({last_error})")
 
-async def imageManager(imageUrls, saveDir):
+async def imageManager(imageUrls, saveDir, on_saved=None):
     slots = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
     async with aiohttp.ClientSession() as session:
         results = await asyncio.gather(
-            *[getImage(session, slots, url, n, saveDir) for n, url in enumerate(imageUrls)],
+            *[getImage(session, slots, url, n, saveDir, on_saved) for n, url in enumerate(imageUrls)],
             return_exceptions=True,
         )
     failures = [r for r in results if isinstance(r, BaseException)]
@@ -86,8 +88,12 @@ async def imageManager(imageUrls, saveDir):
             f"{len(failures)} of {len(imageUrls)} pages failed to download; first: {failures[0]}"
         )
 
-def main(zupuIds, savePath = ZTZUPU_DIR):
-    """Scrape each book id in zupuIds; returns the directory saved for each."""
+def main(zupuIds, savePath = ZTZUPU_DIR, on_total=None, on_saved=None):
+    """Scrape each book id in zupuIds; returns the directory saved for each.
+
+    on_total(n), if given, is called with a book's page count before its
+    download starts, and on_saved() as each page image is saved.
+    """
     saved_dirs = []
     for zupuId in zupuIds:
         url = f'http://www.ztzupu.com/ztzupu/zpzoom/id/{zupuId}.html'
@@ -102,7 +108,9 @@ def main(zupuIds, savePath = ZTZUPU_DIR):
         name = SerializeFolderName(mainPage.find('title').text)
 
         fullSavePath = book_dir(savePath, name)
-        asyncio.run(imageManager(imageUrls, fullSavePath), loop_factory=LOOP_FACTORY)
+        if on_total:
+            on_total(len(imageUrls))
+        asyncio.run(imageManager(imageUrls, fullSavePath, on_saved), loop_factory=LOOP_FACTORY)
         saved_dirs.append(fullSavePath)
     return saved_dirs
 

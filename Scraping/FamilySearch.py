@@ -66,10 +66,11 @@ def go_to_image(page, number):
     page.wait_for_url(lambda url: url != previous_url, timeout=NAVIGATION_TIMEOUT_MS)
 
 
-def main(ids, savePath = FAMILYSEARCH_DIR, on_image=None):
+def main(ids, savePath = FAMILYSEARCH_DIR, on_image=None, on_total=None):
     """Scrape each book URL in ids; returns the directory saved for each.
 
-    on_image(path), if given, is called as each page image is saved.
+    on_image(path), if given, is called as each page image is saved, and
+    on_total(n) with a book's image count before its download starts.
     """
     username = require("FAMILYSEARCH_USERNAME")
     password = require("FAMILYSEARCH_PASSWORD")
@@ -94,6 +95,8 @@ def main(ids, savePath = FAMILYSEARCH_DIR, on_image=None):
             print(f"Scraping {folder_name}")
             total = image_count(page)
             print(f"{total} images")
+            if on_total:
+                on_total(total)
             for number in range(1, total + 1):
                 box_value = page.locator(IMAGE_NUMBER_BOX).input_value()
                 if box_value != str(number):

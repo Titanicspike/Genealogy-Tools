@@ -1,3 +1,4 @@
+{% from "partials/progress.html" import progress_line %}
 {% if sources %}
     {% for source in sources %}
     <li class="px-6 py-4 hover:bg-slate-50 transition-colors">
@@ -15,10 +16,15 @@
                     <span class="text-xs text-slate-500">{{ source.category }}</span>
                     <span class="text-slate-300">•</span>
                     <span class="text-xs text-slate-400">{{ source.created_at[:16] }}</span>
+                    {% if source.page_count and not source.progress %}
+                    <span class="text-slate-300">•</span>
+                    <span class="text-xs text-slate-500">{{ source.page_count }} page{{ '' if source.page_count == 1 else 's' }}</span>
+                    {% endif %}
                     {% if source.topic_name %}
                     <span class="text-xs font-medium px-2 py-0.5 bg-purple-100 text-purple-700 rounded-full">{{ source.topic_name }}</span>
                     {% endif %}
                 </div>
+                {{ progress_line(source.progress) }}
                 {% if source.title and source.category != 'Upload' %}
                 <a href="{{ source.url }}" target="_blank" rel="noopener" class="text-xs text-slate-400 hover:text-indigo-600 hover:underline truncate mt-1" title="{{ source.url }}">{{ source.url }}</a>
                 {% endif %}

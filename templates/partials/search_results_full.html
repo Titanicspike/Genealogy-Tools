@@ -1,0 +1,61 @@
+{% macro marked(parts) %}{% for text, hit in parts %}{% if hit %}<mark class="hl">{{ text }}</mark>{% else %}{{ text }}{% endif %}{% endfor %}{% endmacro %}
+{% if results %}
+    <div class="text-sm text-slate-500 px-1">
+        <span class="font-medium text-slate-700">{{ results|length }}</span> page{{ '' if results|length == 1 else 's' }}
+        in <span class="font-medium text-slate-700">{{ source_count }}</span> source{{ '' if source_count == 1 else 's' }}
+        match "{{ query }}"{% if fuzzy %} across {{ variant_count }} OCR variants{% endif %}{% if topic_name %} in topic <span class="font-medium text-purple-700">{{ topic_name }}</span>{% endif %}
+    </div>
+    {% for result in results %}
+    {% set viewer_url = "/viewer/" ~ result.source_id ~ "?focus_image_id=" ~ result.id ~ "&q=" ~ (query|urlencode) ~ ("&fuzzy=true" if fuzzy else "") %}
+    <article class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm hover:shadow-md transition-shadow flex gap-4">
+        <a href="{{ viewer_url }}" class="shrink-0 hidden sm:block w-28 h-40 rounded-lg border border-slate-200 overflow-hidden bg-slate-100" title="Open this page in the viewer">
+            {% if result.image_url %}
+            <img src="{{ result.image_url }}" alt="" loading="lazy" class="w-full h-full object-cover object-top">
+            {% endif %}
+        </a>
+        <div class="min-w-0 flex-grow">
+            <div class="flex flex-wrap items-start justify-between gap-2">
+                <div class="min-w-0">
+                    <a href="{{ viewer_url }}" class="block font-semibold text-slate-800 hover:text-indigo-700 truncate" title="{{ result.source_title or result.url }}">
+                        {{ result.source_title or (result.url[9:] if result.category == 'Upload' else result.url) }}
+                    </a>
+                    <div class="flex flex-wrap items-center gap-2 mt-1">
+                        {% if result.page_number %}
+                        <span class="text-xs text-slate-600 tabular-nums">Page {{ result.page_number }} of {{ result.page_total }}</span>
+                        {% endif %}
+                        <span class="text-xs font-semibold px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded">{{ result.category }}</span>
+                        {% if result.topic_name %}
+                        <span class="text-xs font-medium px-2 py-0.5 bg-purple-100 text-purple-700 rounded">{{ result.topic_name }}</span>
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="flex gap-3 text-xs font-medium shrink-0">
+                    <a href="{{ viewer_url }}" class="text-emerald-600 hover:text-emerald-800">Open page</a>
+                    {% if result.category != 'Upload' %}
+                    <a href="{{ result.url }}" target="_blank" rel="noopener" class="text-indigo-600 hover:text-indigo-800">Original ↗</a>
+                    {% endif %}
+                </div>
+            </div>
+            {% for match in result.matches %}
+            <div class="mt-3">
+                <span class="inline-block text-[11px] font-semibold px-1.5 py-0.5 mb-1 rounded {% if match.engine == 'TongGuOCR' %}bg-amber-50 text-amber-700{% elif match.engine == 'PaddleOCR-VL' %}bg-violet-50 text-violet-700{% else %}bg-sky-50 text-sky-700{% endif %}">{{ match.engine }}</span>
+                <p class="text-sm text-slate-700 leading-relaxed">{{ marked(match.snippet) }}</p>
+                <details class="mt-1 group">
+                    <summary class="text-xs text-slate-400 hover:text-indigo-600 cursor-pointer select-none">Full page text</summary>
+                    <p class="mt-2 text-sm text-slate-700 bg-slate-50 p-3 rounded border border-slate-100 whitespace-pre-wrap leading-relaxed">{{ marked(match.full) }}</p>
+                </details>
+            </div>
+            {% endfor %}
+        </div>
+    </article>
+    {% endfor %}
+{% elif query %}
+    <div class="text-center text-slate-500 py-16 bg-white rounded-xl border border-slate-200">
+        <p>No results found for "{{ query }}".</p>
+        <p class="text-xs text-slate-400 mt-1">Try fuzzy search, or widen the topic, website or engine filters.</p>
+    </div>
+{% else %}
+    <div class="text-center text-slate-400 py-16 text-sm bg-white rounded-xl border border-slate-200">
+        Enter a query to start searching.
+    </div>
+{% endif %}

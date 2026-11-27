@@ -68,6 +68,8 @@ async def init_db():
         # been through it (reindex_paddleocr.py fills in any that are missing).
         if "paddleocr_text" not in page_columns:
             await db.execute("ALTER TABLE pages ADD COLUMN paddleocr_text TEXT")
+        # Source lists count each source's pages, and the viewer reads them by source.
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_pages_source_id ON pages(source_id)")
         await backfill_source_titles(db)
         await db.commit()
 

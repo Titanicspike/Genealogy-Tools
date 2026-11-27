@@ -30,6 +30,34 @@ _site_slots: dict[str, asyncio.Semaphore] = {}
 PAGE_OCR_CONCURRENCY = max(1, int(os.environ.get("PAGE_OCR_CONCURRENCY", "4")))
 
 
+# Live progress of sources being worked on, by source id. Jobs only live in
+# this process, so this is kept in memory rather than in the database:
+#   downloaded / download_total  page images saved by the scraper, and how many
+#                                the book has (None when the site doesn't say)
+#   ocr_done / ocr_total         pages OCR'd and saved, and pages queued for OCR
+# Entries are dropped when a source finishes or fails.
+progress: dict[int, dict] = {}
+
+
+def start_progress(source_id: int, download_total: int | None = None, ocr_total: int = 0):
+    progress[source_id] = {
+        "downloaded": 0,
+        "download_total": download_total,
+        "ocr_done": 0,
+        "ocr_total": ocr_total,
+    }
+
+
+def update_progress(source_id: int, **changes):
+    if source_id in progress:
+        progress[source_id].update(changes)
+
+
+def bump_progress(source_id: int, key: str, by: int = 1):
+    if source_id in progress:
+        progress[source_id][key] += by
+
+
 def site_slots(category: str) -> asyncio.Semaphore:
     """The semaphore limiting concurrent sources for one website (category)."""
     if category not in _site_slots:
@@ -136,6 +164,7 @@ async def ocr_pages(source_id: int, image_paths: "list[str] | asyncio.Queue"):
         while (item := await in_order.get()) is not None:
             image_path, page_read = item
             await save_page(source_id, image_path, await page_read)
+            bump_progress(source_id, "ocr_done")
 
     saver = asyncio.create_task(save_in_order())
     try:
@@ -154,6 +183,7 @@ async def ocr_pages(source_id: int, image_paths: "list[str] | asyncio.Queue"):
             if key in seen:
                 continue
             seen.add(key)
+            update_progress(source_id, ocr_total=len(seen))
             page_read = asyncio.create_task(read(image_path))
             reads.append(page_read)
             in_order.put_nowait((image_path, page_read))
@@ -196,7 +226,11 @@ def render_pdf_pages(pdf_path: str, output_dir: str) -> list[str]:
 async def process_uploaded_files(source_id: int, file_paths: list[str]):
     """OCR uploaded image files and rasterize PDFs into OCR-ready page images."""
     async with site_slots("Upload"):
-        await _process_uploaded_files(source_id, file_paths)
+        start_progress(source_id)
+        try:
+            await _process_uploaded_files(source_id, file_paths)
+        finally:
+            progress.pop(source_id, None)
 
 
 async def _process_uploaded_files(source_id: int, file_paths: list[str]):
@@ -246,22 +280,25 @@ async def _process_uploaded_files(source_id: int, file_paths: list[str]):
         finally:
             await db.close()
 
-def run_scraper_sync(category: str, url: str, on_image=None) -> str | None:
+def run_scraper_sync(category: str, url: str, on_image=None, on_total=None, on_saved=None) -> str | None:
     """Scrape one book and return the directory its page images were saved in.
 
     FamilySearch and MyChinaRoots download pages one after another and call
     on_image(path) as each is saved, so OCR can start right away. ZtZupu
     downloads pages in parallel, out of order, so its pages are only picked up
     from the returned directory once the whole book is downloaded.
+
+    on_total(n) is called once the scraper knows how many pages the book has
+    (MyChinaRoots never says), and on_saved() as ZtZupu saves each page.
     """
     print(f"Running scraper for {category} with URL: {url}")
     try:
         if category == "FamilySearch":
-            saved_dirs = FamilySearch.main([url], on_image=on_image)
+            saved_dirs = FamilySearch.main([url], on_image=on_image, on_total=on_total)
         elif category == "MyChinaRoots":
             saved_dirs = MCR.main([url.split("/")[-1]], on_image=on_image)
         elif category == "ZtZupu":
-            saved_dirs = ztzupu.main([re.sub(r'[^\d]', '', url)])
+            saved_dirs = ztzupu.main([re.sub(r'[^\d]', '', url)], on_total=on_total, on_saved=on_saved)
         else:
             print(f"Unknown category {category}")
             return None
@@ -276,7 +313,11 @@ def run_scraper_sync(category: str, url: str, on_image=None) -> str | None:
 async def process_jiapu_source(source_id: int, url: str, category: str):
     """Scrape a book, then OCR its pages, once its website has a free slot."""
     async with site_slots(category):
-        await _process_jiapu_source(source_id, url, category)
+        start_progress(source_id)
+        try:
+            await _process_jiapu_source(source_id, url, category)
+        finally:
+            progress.pop(source_id, None)
 
 
 class OCRStopped(Exception):
@@ -312,7 +353,16 @@ async def _process_jiapu_source(source_id: int, url: str, category: str):
             # The scrapers save each book into a directory named after it.
             title = os.path.basename(os.path.dirname(image_path))
             await set_source_status(source_id, "Scraping + OCR", title)
+        bump_progress(source_id, "downloaded")
         incoming.put_nowait(image_path)
+
+    def on_total(total: int):
+        """Called from the scraper's thread once it knows the book's page count."""
+        loop.call_soon_threadsafe(update_progress, source_id, download_total=total)
+
+    def on_saved():
+        """Called from ZtZupu's thread for each page saved (it has no on_image)."""
+        loop.call_soon_threadsafe(bump_progress, source_id, "downloaded")
 
     def on_image(image_path: str):
         """Called from the scraper's thread each time it saves a page image."""
@@ -333,12 +383,15 @@ async def _process_jiapu_source(source_id: int, url: str, category: str):
         ocr_task = asyncio.create_task(ocr_pages(source_id, incoming))
 
         # Run the synchronous scraper in a separate thread so it doesn't block the event loop
-        image_dir = await asyncio.to_thread(run_scraper_sync, category, url, on_image)
+        image_dir = await asyncio.to_thread(run_scraper_sync, category, url, on_image, on_total, on_saved)
 
         # Record the book's title from the directory the scraper returns.
         # normpath first so a trailing separator does not yield an empty name.
         title = os.path.basename(os.path.normpath(image_dir)) if image_dir else None
         await set_source_status(source_id, "Running OCR", title)
+        # The scrape is over, so whatever it saved is the book's full page count.
+        if source_id in progress and progress[source_id]["download_total"] is None:
+            update_progress(source_id, download_total=progress[source_id]["downloaded"])
 
         # Queue any page the scraper didn't report as it went (all of ZtZupu's);
         # pages OCR already has are skipped.

@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+
+{% block title %}Sources - Jiapu Source Manager{% endblock %}
+
+{% block content %}
+<main class="container mx-auto px-6 py-8 flex-grow flex flex-col gap-6">
+
+    <div class="flex flex-wrap items-end justify-between gap-4">
+        <div>
+            <h2 class="text-2xl font-semibold text-slate-800">Sources</h2>
+            <p class="text-sm text-slate-500 mt-1">Every book and upload, with page counts, OCR coverage and live progress. Add new sources from <a href="/" class="text-indigo-700 hover:underline">Home</a>.</p>
+        </div>
+        <span class="text-xs font-medium px-2.5 py-1 bg-indigo-100 text-indigo-700 rounded-full">Updates live while sources run</span>
+    </div>
+
+    <!-- Filters -->
+    <form id="browse-filters" class="bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex flex-wrap items-end gap-3"
+          onsubmit="event.preventDefault()">
+        <label class="flex flex-col gap-1 text-xs font-medium text-slate-500 flex-grow min-w-[200px]">
+            Title or link
+            <input id="browse-text" type="search" name="text" placeholder="Filter by title or URL..."
+                   class="px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-800 font-normal focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none">
+        </label>
+        <label class="flex flex-col gap-1 text-xs font-medium text-slate-500">
+            Topic
+            <select name="topic_id" class="px-3 py-2 border border-slate-300 rounded-lg bg-white text-sm text-slate-800 font-normal focus:ring-2 focus:ring-indigo-500 outline-none">
+                <option value="">All topics</option>
+                {% for topic in topics %}
+                <option value="{{ topic.id }}" {% if selected_topic_id == topic.id %}selected{% endif %}>{{ topic.name }} ({{ topic.source_count }})</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label class="flex flex-col gap-1 text-xs font-medium text-slate-500">
+            Status
+            <select name="status" class="px-3 py-2 border border-slate-300 rounded-lg bg-white text-sm text-slate-800 font-normal focus:ring-2 focus:ring-indigo-500 outline-none">
+                <option value="">Any status</option>
+                <option value="active">In progress</option>
+                <option value="Completed">Completed</option>
+                <option value="Failed">Failed</option>
+            </select>
+        </label>
+        <label class="flex flex-col gap-1 text-xs font-medium text-slate-500">
+            Website
+            <select name="category" class="px-3 py-2 border border-slate-300 rounded-lg bg-white text-sm text-slate-800 font-normal focus:ring-2 focus:ring-indigo-500 outline-none">
+                <option value="">All websites</option>
+                {% for category in categories %}
+                <option value="{{ category }}">{{ category }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label class="flex flex-col gap-1 text-xs font-medium text-slate-500">
+            Sort by
+            <select name="sort" class="px-3 py-2 border border-slate-300 rounded-lg bg-white text-sm text-slate-800 font-normal focus:ring-2 focus:ring-indigo-500 outline-none">
+                <option value="newest">Newest first</option>
+                <option value="oldest">Oldest first</option>
+                <option value="title">Title</option>
+                <option value="pages">Most pages</option>
+            </select>
+        </label>
+    </form>
+
+    <div id="source-table"
+         hx-get="/sources/table"
+         {# Poll only while a source is running, so the page thumbnails aren't redrawn for nothing. #}
+         hx-trigger="load, every 5s [document.querySelector('#source-table [data-active]')], refresh, change from:#browse-filters, input changed delay:300ms from:#browse-text"
+         hx-include="#browse-filters"
+         {# Don't redraw the table under an open topic dropdown. #}
+         hx-on::before-request="if (event.target === this && this.contains(document.activeElement) && document.activeElement.tagName === 'SELECT') event.preventDefault();">
+        <div class="p-8 text-center text-slate-400 text-sm">Loading sources...</div>
+    </div>
+</main>
+{% endblock %}

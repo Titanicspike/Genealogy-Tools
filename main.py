@@ -19,7 +19,8 @@ import uuid
 from functools import lru_cache
 from database import init_db, get_db, clear_db, fail_interrupted_sources
 import ocr_engines
-from tasks import process_jiapu_source, process_uploaded_files
+from tasks import process_jiapu_source, process_uploaded_files, progress
+import re
 from contextlib import asynccontextmanager
 import itertools
 
@@ -210,6 +211,110 @@ async def assert_topic_exists(db, topic_id: int | None):
         raise HTTPException(status_code=404, detail="Topic not found")
 
 
+def progress_view(source: dict) -> dict | None:
+    """Short progress figures for a source that is being worked on, or None.
+
+    Returns the labels shown under the source ("34/120" downloaded, "12/120"
+    OCR'd) and the bar widths as percentages. A scrape whose site doesn't say
+    how many pages the book has shows a bare download count until it ends.
+    """
+    live = progress.get(source["id"])
+    if not live:
+        return None
+    downloaded, download_total = live["downloaded"], live["download_total"]
+    ocr_done, ocr_total = live["ocr_done"], live["ocr_total"]
+    is_upload = source["category"] == "Upload"
+
+    # The best guess at the book's page count, used as the bar's full width.
+    total = ocr_total if is_upload else (download_total or max(ocr_total, downloaded))
+
+    def pct(n):
+        return min(100, round(100 * n / total)) if total else 0
+
+    return {
+        "download": None if is_upload else (
+            f"{downloaded}/{download_total}" if download_total else f"{downloaded}"
+        ),
+        "ocr": f"{ocr_done}/{total}" if total else f"{ocr_done}",
+        "download_pct": 0 if is_upload else pct(downloaded),
+        "ocr_pct": pct(ocr_done),
+    }
+
+
+SOURCE_SORTS = {
+    "newest": "s.created_at DESC",
+    "oldest": "s.created_at ASC",
+    "title": "COALESCE(s.title, s.url) COLLATE NOCASE ASC",
+    "pages": "page_count DESC",
+}
+
+
+async def fetch_sources(
+    db,
+    topic_id: int | None = None,
+    status: str = "",
+    category: str = "",
+    text: str = "",
+    sort: str = "newest",
+) -> list[dict]:
+    """Sources with their topic, page counts per OCR engine and live progress.
+
+    status is "active" (anything still running), "Completed", "Failed" or ""
+    for all; text matches the title or URL.
+    """
+    query = """
+        SELECT s.*, t.name AS topic_name,
+               COUNT(p.id) AS page_count,
+               COUNT(p.ocr_text) AS hunyuan_count,
+               COUNT(p.tongguocr_text) AS tongguocr_count,
+               COUNT(p.paddleocr_text) AS paddleocr_count,
+               MIN(p.id) AS first_page_id
+        FROM sources s
+        LEFT JOIN topics t ON s.topic_id = t.id
+        LEFT JOIN pages p ON p.source_id = s.id
+    """
+    where, params = [], []
+    if topic_id is not None:
+        where.append("s.topic_id = ?")
+        params.append(topic_id)
+    if status == "active":
+        where.append("s.status NOT IN ('Completed', 'Failed')")
+    elif status:
+        where.append("s.status = ?")
+        params.append(status)
+    if category:
+        where.append("s.category = ?")
+        params.append(category)
+    if text.strip():
+        where.append("(s.title LIKE ? OR s.url LIKE ?)")
+        params += [f"%{text.strip()}%"] * 2
+    if where:
+        query += " WHERE " + " AND ".join(where)
+    query += " GROUP BY s.id ORDER BY " + SOURCE_SORTS.get(sort, SOURCE_SORTS["newest"])
+
+    cursor = await db.execute(query, params)
+    sources = [dict(row) for row in await cursor.fetchall()]
+
+    # The first page's image, for a thumbnail on the sources page.
+    first_ids = [source["first_page_id"] for source in sources if source["first_page_id"]]
+    first_images = {}
+    for batch in chunked(first_ids, 900):
+        cursor = await db.execute(
+            f"SELECT id, image_path FROM pages WHERE id IN ({','.join('?' * len(batch))})", batch
+        )
+        first_images.update({row["id"]: row["image_path"] for row in await cursor.fetchall()})
+
+    for source in sources:
+        source["progress"] = progress_view(source)
+        source["thumbnail_url"] = get_image_url(first_images.get(source["first_page_id"], ""))
+    return sources
+
+
+async def fetch_categories(db) -> list[str]:
+    cursor = await db.execute("SELECT DISTINCT category FROM sources ORDER BY category")
+    return [row["category"] for row in await cursor.fetchall()]
+
+
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
     db = await get_db()
@@ -221,7 +326,7 @@ async def read_root(request: Request):
     return templates.TemplateResponse(
         request=request,
         name="index.html",
-        context={"request": request, "topics": topics, "selected_topic_id": None},
+        context={"request": request, "active_page": "home", "topics": topics, "selected_topic_id": None},
     )
 
 
@@ -516,19 +621,7 @@ async def get_sources(request: Request, topic_id: str | None = None):
 
     db = await get_db()
     try:
-        query = """
-            SELECT s.*, t.name AS topic_name
-            FROM sources s
-            LEFT JOIN topics t ON s.topic_id = t.id
-        """
-        params = []
-        if filter_by_topic:
-            query += " WHERE s.topic_id = ?"
-            params.append(selected_topic_id)
-        query += " ORDER BY s.created_at DESC"
-
-        cursor = await db.execute(query, params)
-        sources = await cursor.fetchall()
+        sources = await fetch_sources(db, selected_topic_id if filter_by_topic else None)
         topics = await fetch_topics(db)
     finally:
         await db.close()
@@ -541,6 +634,68 @@ async def get_sources(request: Request, topic_id: str | None = None):
             "sources": sources,
             "topics": topics,
             "selected_topic_id": selected_topic_id,
+        },
+    )
+
+
+@app.get("/browse", response_class=HTMLResponse)
+async def browse_page(request: Request, topic_id: str | None = None):
+    """Full-page sources table with filters, page counts and per-engine coverage."""
+    db = await get_db()
+    try:
+        topics = await fetch_topics(db)
+        categories = await fetch_categories(db)
+    finally:
+        await db.close()
+
+    return templates.TemplateResponse(
+        request=request,
+        name="browse.html",
+        context={
+            "request": request,
+            "active_page": "browse",
+            "topics": topics,
+            "categories": categories,
+            "selected_topic_id": parse_topic_id(topic_id),
+        },
+    )
+
+
+@app.get("/sources/table", response_class=HTMLResponse)
+async def get_sources_table(
+    request: Request,
+    topic_id: str | None = None,
+    status: str = "",
+    category: str = "",
+    text: str = "",
+    sort: str = "newest",
+):
+    selected_topic_id = parse_topic_id(topic_id)
+    db = await get_db()
+    try:
+        sources = await fetch_sources(db, selected_topic_id, status, category, text, sort)
+        topics = await fetch_topics(db)
+        # Library-wide totals for the summary strip, ignoring the filters.
+        cursor = await db.execute("""
+            SELECT
+                (SELECT COUNT(*) FROM sources) AS sources,
+                (SELECT COUNT(*) FROM sources WHERE status NOT IN ('Completed', 'Failed')) AS active,
+                (SELECT COUNT(*) FROM sources WHERE status = 'Failed') AS failed,
+                (SELECT COUNT(*) FROM pages) AS pages
+        """)
+        totals = dict(await cursor.fetchone())
+    finally:
+        await db.close()
+
+    return templates.TemplateResponse(
+        request=request,
+        name="partials/source_table.html",
+        context={
+            "request": request,
+            "sources": sources,
+            "topics": topics,
+            "totals": totals,
+            "filtered": bool(selected_topic_id or status or category or text.strip()),
         },
     )
 
@@ -569,9 +724,119 @@ async def get_source_text(source_id: int, download: bool = False):
 
     return PlainTextResponse(text, headers=headers)
 
+SNIPPET_CONTEXT = 70
+
+
+def highlight_segments(text: str, pattern: "re.Pattern | None", snippet: bool) -> list[tuple[str, bool]]:
+    """Split text into (piece, is_hit) parts for the template to mark up.
+
+    With snippet, only the text around the first hit is kept, with ellipses.
+    Returning parts rather than HTML leaves escaping to the template.
+    """
+    text = text or ""
+    matches = list(pattern.finditer(text)) if pattern else []
+    start, end = 0, len(text)
+    if snippet and matches:
+        start = max(0, matches[0].start() - SNIPPET_CONTEXT)
+        end = min(len(text), matches[0].end() + SNIPPET_CONTEXT * 2)
+    elif snippet:
+        end = min(len(text), SNIPPET_CONTEXT * 3)
+
+    parts, position = [], start
+    if start > 0:
+        parts.append(("…", False))
+    for match in matches:
+        if match.end() <= start or match.start() >= end:
+            continue
+        hit_start, hit_end = max(match.start(), start), min(match.end(), end)
+        if hit_start > position:
+            parts.append((text[position:hit_start], False))
+        parts.append((text[hit_start:hit_end], True))
+        position = hit_end
+    if position < end:
+        parts.append((text[position:end], False))
+    if end < len(text):
+        parts.append(("…", False))
+    return parts
+
+
+async def add_page_details(results: list[dict], variants: list[str]):
+    """Add what the search page shows beyond the home page's results: each
+    hit's page number within its source, the source's page count, an image
+    URL, and highlighted snippet and full text for each matching engine."""
+    pattern = None
+    alternatives = sorted({v for v in variants if v}, key=len, reverse=True)
+    if alternatives:
+        # Longest first, so a longer variant wins over a shorter one it contains.
+        pattern = re.compile("|".join(re.escape(v) for v in alternatives))
+
+    source_ids = list({r["source_id"] for r in results})
+    page_numbers, page_totals = {}, {}
+    db = await get_db()
+    try:
+        for batch in chunked(source_ids, 900):
+            cursor = await db.execute(
+                f"SELECT id, source_id FROM pages WHERE source_id IN ({','.join('?' * len(batch))}) ORDER BY id",
+                batch,
+            )
+            for row in await cursor.fetchall():
+                page_totals[row["source_id"]] = page_totals.get(row["source_id"], 0) + 1
+                page_numbers[row["id"]] = page_totals[row["source_id"]]
+    finally:
+        await db.close()
+
+    for result in results:
+        result["page_number"] = page_numbers.get(result["id"])
+        result["page_total"] = page_totals.get(result["source_id"])
+        result["image_url"] = get_image_url(result["image_path"])
+        for match in result["matches"]:
+            match["snippet"] = highlight_segments(match["text"], pattern, snippet=True)
+            match["full"] = highlight_segments(match["text"], pattern, snippet=False)
+
+
+@app.get("/find", response_class=HTMLResponse)
+async def search_page(request: Request, query: str = "", fuzzy: bool = False, topic_id: str | None = None):
+    """Full-page search with filters and larger results."""
+    db = await get_db()
+    try:
+        topics = await fetch_topics(db)
+        categories = await fetch_categories(db)
+    finally:
+        await db.close()
+
+    return templates.TemplateResponse(
+        request=request,
+        name="search.html",
+        context={
+            "request": request,
+            "active_page": "search",
+            "topics": topics,
+            "categories": categories,
+            "engines": [name for name, _ in OCR_ENGINES],
+            "selected_topic_id": parse_topic_id(topic_id),
+            "query": query,
+            "fuzzy": fuzzy,
+        },
+    )
+
+
 @app.get("/search", response_class=HTMLResponse)
-async def search(request: Request, query: str = "", fuzzy: bool = False, topic_id: str | None = None):
+async def search(
+    request: Request,
+    query: str = "",
+    fuzzy: bool = False,
+    topic_id: str | None = None,
+    category: str = "",
+    engine: str = "",
+    layout: str = "",
+):
+    """Search page text. layout=full renders the larger results on the search
+    page (page numbers, highlighted snippets, thumbnails); category and engine
+    narrow results to one website or one OCR engine's text."""
     selected_topic_id = parse_topic_id(topic_id)
+    full = layout == "full"
+    results_template = "partials/search_results_full.html" if full else "partials/search_results.html"
+    engines = [e for e in OCR_ENGINES if e[0] == engine] or list(OCR_ENGINES)
 
     topic_name = None
     if selected_topic_id is not None:
@@ -588,15 +853,15 @@ async def search(request: Request, query: str = "", fuzzy: bool = False, topic_i
     if not query.strip():
         return templates.TemplateResponse(
             request=request,
-            name="partials/search_results.html",
+            name=results_template,
             context={"request": request, "results": [], "fuzzy": fuzzy, "topic_name": topic_name},
         )
 
     search_queries = search_variants(query, fuzzy)
 
     # SQLite's default limit is 999 bound params; stay comfortably under that per statement.
-    # Each variant binds once per OCR engine and the topic filter takes one more.
-    BATCH_SIZE = 900 // len(OCR_ENGINES) - 1
+    # Each variant binds once per OCR engine; the topic and site filters take two more.
+    BATCH_SIZE = 900 // len(engines) - 2
 
     db = await get_db()
     try:
@@ -605,14 +870,17 @@ async def search(request: Request, query: str = "", fuzzy: bool = False, topic_i
 
         for batch in chunked(search_queries, BATCH_SIZE):
             # A page matches if any variant appears in any engine's text.
-            one_variant = "(" + " OR ".join(f"p.{column} LIKE ?" for _, column in OCR_ENGINES) + ")"
+            one_variant = "(" + " OR ".join(f"p.{column} LIKE ?" for _, column in engines) + ")"
             like_clauses = " OR ".join([one_variant] * len(batch))
-            params = [f"%{q}%" for q in batch for _ in OCR_ENGINES]
+            params = [f"%{q}%" for q in batch for _ in engines]
 
             topic_clause = ""
             if selected_topic_id is not None:
                 topic_clause = " AND s.topic_id = ?"
                 params.append(selected_topic_id)
+            if category:
+                topic_clause += " AND s.category = ?"
+                params.append(category)
 
             cursor = await db.execute(f"""
                 SELECT p.id, p.source_id, p.ocr_text, p.tongguocr_text, p.paddleocr_text, p.image_path,
@@ -628,9 +896,9 @@ async def search(request: Request, query: str = "", fuzzy: bool = False, topic_i
                 page = rows_by_id.setdefault(row["id"], {**dict(row), "engines": set()})
                 for q in batch:
                     hit = False
-                    for engine, column in OCR_ENGINES:
+                    for engine_name, column in engines:
                         if q in (page[column] or ""):
-                            page["engines"].add(engine)
+                            page["engines"].add(engine_name)
                             hit = True
                     if hit:
                         match_counts[page["id"]] = match_counts.get(page["id"], 0) + 1
@@ -640,29 +908,33 @@ async def search(request: Request, query: str = "", fuzzy: bool = False, topic_i
     for page in rows_by_id.values():
         # Show the text from each engine that matched, in OCR_ENGINES order.
         page["matches"] = [
-            {"engine": engine, "text": page[column]}
-            for engine, column in OCR_ENGINES
-            if engine in page["engines"]
+            {"engine": engine_name, "text": page[column]}
+            for engine_name, column in engines
+            if engine_name in page["engines"]
         ] or [
             # LIKE is case-insensitive for Latin letters but `in` is not, so a
             # page can match in SQL with no engine recorded; show it anyway.
-            {"engine": engine, "text": page[column]}
-            for engine, column in OCR_ENGINES
+            {"engine": engine_name, "text": page[column]}
+            for engine_name, column in engines
             if page[column]
         ][:1]
 
     def sort_key(row):
-        exact_match = any(query in (row[column] or "") for _, column in OCR_ENGINES)
-        return (not exact_match, -match_counts[row["id"]])
+        exact_match = any(query in (row[column] or "") for _, column in engines)
+        return (not exact_match, -match_counts.get(row["id"], 0))
 
     results = sorted(rows_by_id.values(), key=sort_key)
 
+    if full:
+        await add_page_details(results, search_queries)
+
     return templates.TemplateResponse(
         request=request,
-        name="partials/search_results.html",
+        name=results_template,
         context={
             "request": request,
             "results": results,
+            "source_count": len({r["source_id"] for r in results}),
             "query": query,
             "fuzzy": fuzzy,
             "variant_count": len(search_queries),

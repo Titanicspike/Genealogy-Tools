@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+
+{% block title %}Search - Jiapu Source Manager{% endblock %}
+
+{% block content %}
+<main class="container mx-auto px-6 py-8 flex-grow flex flex-col lg:flex-row gap-6 items-start">
+
+    <!-- Filters -->
+    <form id="find-form"
+          class="w-full lg:w-72 shrink-0 lg:sticky lg:top-6 bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex flex-col gap-4"
+          hx-get="/search"
+          hx-target="#find-results"
+          hx-trigger="submit, change, input changed delay:500ms from:#find-input, load"
+          hx-sync="this:replace"
+          hx-indicator="#find-indicator"
+          hx-on::before-request="syncSearchUrl(this)">
+        <input type="hidden" name="layout" value="full">
+        <div>
+            <h2 class="text-lg font-semibold text-slate-700">Search OCR text</h2>
+            <p class="text-xs text-slate-500 mt-1">Matches Simplified &amp; Traditional variants across all three OCR engines.</p>
+        </div>
+        <input id="find-input" type="search" name="query" value="{{ query }}" autofocus
+               placeholder="Search characters (e.g. 張三)..."
+               class="w-full px-3 py-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none text-lg shadow-sm">
+        <label class="flex items-center gap-2 text-sm text-slate-600 cursor-pointer select-none">
+            <input type="checkbox" name="fuzzy" value="true" {% if fuzzy %}checked{% endif %}
+                   class="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500">
+            Fuzzy search with OCR character variants
+        </label>
+        <label class="flex flex-col gap-1 text-xs font-medium text-slate-500">
+            Topic
+            <select name="topic_id" class="px-3 py-2 border border-slate-300 rounded-lg bg-white text-sm text-slate-800 font-normal focus:ring-2 focus:ring-indigo-500 outline-none">
+                <option value="">All topics</option>
+                {% for topic in topics %}
+                <option value="{{ topic.id }}" {% if selected_topic_id == topic.id %}selected{% endif %}>{{ topic.name }} ({{ topic.source_count }})</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label class="flex flex-col gap-1 text-xs font-medium text-slate-500">
+            Website
+            <select name="category" class="px-3 py-2 border border-slate-300 rounded-lg bg-white text-sm text-slate-800 font-normal focus:ring-2 focus:ring-indigo-500 outline-none">
+                <option value="">All websites</option>
+                {% for category in categories %}
+                <option value="{{ category }}">{{ category }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label class="flex flex-col gap-1 text-xs font-medium text-slate-500">
+            OCR engine
+            <select name="engine" class="px-3 py-2 border border-slate-300 rounded-lg bg-white text-sm text-slate-800 font-normal focus:ring-2 focus:ring-indigo-500 outline-none">
+                <option value="">Any engine</option>
+                {% for engine in engines %}
+                <option value="{{ engine }}">{{ engine }}</option>
+                {% endfor %}
+            </select>
+        </label>
+    </form>
+
+    <!-- Results -->
+    <section class="flex-grow min-w-0 w-full">
+        <div id="find-indicator" class="htmx-indicator flex justify-center py-4">
+            <svg class="animate-spin h-6 w-6 text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+        </div>
+        <div id="find-results" class="flex flex-col gap-4"></div>
+    </section>
+</main>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Keep the address bar in step with the search, so it can be bookmarked
+    // or reloaded. Only non-default filters are written.
+    function syncSearchUrl(form) {
+        const params = new URLSearchParams();
+        for (const [key, value] of new FormData(form)) {
+            if (key !== 'layout' && value) params.set(key, value);
+        }
+        const query = params.toString();
+        history.replaceState(null, '', '/find' + (query ? '?' + query : ''));
+    }
+    // Restore website/engine filters from the URL (the server fills in the rest).
+    const initial = new URLSearchParams(location.search);
+    for (const key of ['category', 'engine']) {
+        const select = document.querySelector(`#find-form [name=${key}]`);
+        if (initial.get(key)) select.value = initial.get(key);
+    }
+</script>
+{% endblock %}
