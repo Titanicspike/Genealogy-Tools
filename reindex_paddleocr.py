@@ -102,7 +102,8 @@ def main():
         for index, (page_id, text, error) in enumerate(pool.map(ocr_page, pending), start=1):
             if error is None:
                 # Commit each page so the app sees progress and a stop loses nothing.
-                db.execute("UPDATE pages SET paddleocr_text = ? WHERE id = ?", (text, page_id))
+                image_path = pending[index - 1][1]
+                db.execute("UPDATE pages SET paddleocr_text = ? WHERE id = ? AND image_path = ?", (text, page_id, image_path))
                 db.commit()
                 done += 1
                 status = f"{len(text)} chars"

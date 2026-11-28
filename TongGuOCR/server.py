@@ -187,8 +187,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            # The client gave up (timed out or was stopped) before the reply;
+            # there is no one left to send it to.
+            LOGGER.warning("Client disconnected before the %s %s reply was sent", status, self.path)
+            self.close_connection = True
 
     def do_GET(self):
         if self.path == "/health":

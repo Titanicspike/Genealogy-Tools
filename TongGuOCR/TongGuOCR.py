@@ -2,6 +2,7 @@
 
 import json
 import os
+import threading
 
 import requests
 
@@ -10,7 +11,15 @@ from ocr_cleanup import collapse_repetitions
 
 TONGGUOCR_URL = os.environ.get("TONGGUOCR_URL", "http://127.0.0.1:9100")
 # A dense page takes ~10-40s; leave plenty of headroom for very large scans.
-REQUEST_TIMEOUT = 600
+# (connect, read): the read timeout only covers the server working on this one
+# page, because REQUEST_LOCK keeps requests from queueing on the server.
+REQUEST_TIMEOUT = (10, 600)
+
+# The server reads one page at a time and makes the rest wait on its own lock.
+# Time spent waiting there counts toward the client's read timeout, so with
+# several pages in flight the last ones timed out and the server then hit a
+# broken pipe sending their results. Waiting here instead has no timeout.
+REQUEST_LOCK = threading.Lock()
 
 # TongGuOCR's training data writes the comma and colon as these two glyphs.
 # Map them to the full-width punctuation HunyuanOCR emits so text from the two
@@ -34,7 +43,7 @@ def recognize(image_path: str, with_text: bool = True) -> tuple[str | None, str]
     with open(image_path, "rb") as image_file:
         image_bytes = image_file.read()
 
-    with ocr_engines.in_use("tongguocr"):
+    with REQUEST_LOCK, ocr_engines.in_use("tongguocr"):
         response = requests.post(
             f"{TONGGUOCR_URL}/ocr" + ("" if with_text else "?mode=columns"),
             data=image_bytes,

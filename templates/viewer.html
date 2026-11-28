@@ -56,6 +56,26 @@
                     {% if source.category != 'Upload' %}<a href="{{ source.url }}" target="_blank" class="underline hover:text-white">Original source ↗</a>{% endif %}
                 </div>
             </div>
+            {% if viewer_data.pages %}
+            <div class="flex items-center gap-2 text-sm">
+                <a id="download-page" download title="Download image" aria-label="Download image" class="p-1.5 rounded hover:bg-indigo-500">
+                    <svg aria-hidden="true" class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 3v12m-5-5 5 5 5-5M4 16v4h16v-4"/>
+                    </svg>
+                </a>
+                <button data-rotate="left" title="Rotate 90° counterclockwise" aria-label="Rotate 90° counterclockwise" class="p-1.5 rounded hover:bg-indigo-500 disabled:opacity-40">
+                    <svg aria-hidden="true" class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M3 4v6h6M3.5 10a8.5 8.5 0 1 1 1 7"/>
+                    </svg>
+                </button>
+                <button data-rotate="right" title="Rotate 90° clockwise" aria-label="Rotate 90° clockwise" class="p-1.5 rounded hover:bg-indigo-500 disabled:opacity-40">
+                    <svg aria-hidden="true" class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 4v6h-6m5.5 0a8.5 8.5 0 1 0-1 7"/>
+                    </svg>
+                </button>
+                <span id="rotation-status" role="status"></span>
+            </div>
+            {% endif %}
             <div class="flex items-center gap-1.5">
                 <button id="prev-page" class="p-1.5 rounded hover:bg-indigo-500 disabled:opacity-40" title="Previous page (←)">
                     <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
@@ -165,6 +185,42 @@
             pendingZoomToHit: false,
         };
         const pageCache = new Map();
+        const rotating = new Set();
+        const rotationStatus = new Map();
+
+        function updateImageActions(page) {
+            $('download-page').href = page.image_url;
+            $('rotation-status').textContent = rotationStatus.get(page.id) || '';
+            document.querySelectorAll('[data-rotate]').forEach(b => b.disabled = rotating.has(page.id));
+        }
+
+        document.querySelectorAll('[data-rotate]').forEach(button => button.onclick = async () => {
+            const i = state.index, page = pages[i], direction = button.dataset.rotate;
+            if (!confirm(`Rotate page ${i + 1} 90° ${direction}, save it, and re-index its text?`)) return;
+            rotating.add(page.id);
+            rotationStatus.set(page.id, 'Saving and re-indexing…');
+            updateImageActions(page);
+            try {
+                const response = await fetch(`/api/pages/${page.id}/rotate?direction=${direction}`, {
+                    method: 'POST', body: new URLSearchParams({image_url: page.image_url})
+                });
+                if (!response.ok) throw new Error((await response.json()).detail || 'Rotation failed.');
+                const result = await response.json();
+                rotationStatus.set(page.id, result.indexed ? 'Saved and re-indexed.' : 'Rotation saved. OCR is incomplete.');
+            } catch (error) {
+                rotationStatus.set(page.id, error.message);
+            } finally {
+                pageCache.delete(page.id);
+                try {
+                    const fresh = await fetchPage(page.id);
+                    page.image_url = fresh.image_url;
+                    document.querySelectorAll(`.thumb[data-index="${i}"] img`).forEach(t => t.src = fresh.image_url);
+                } finally {
+                    rotating.delete(page.id);
+                    if (state.index === i) goTo(i);
+                }
+            }
+        });
 
         // ---------- Page list, thumbnails, grid ----------
         $('page-total').textContent = pages.length;
@@ -214,6 +270,7 @@
             if (!pages.length) return;
             i = Math.max(0, Math.min(pages.length - 1, i));
             state.index = i;
+            updateImageActions(pages[i]);
             state.selected = -1;
             state.pendingZoomToHit = zoomToHit || !!state.variants.length;
             $('page-input').value = i + 1;
@@ -235,6 +292,8 @@
                 return;
             }
             if (state.index !== i) return; // navigated away while loading
+            pages[i].image_url = page.image_url;
+            updateImageActions(pages[i]);
             state.page = page;
             state.columns = orderColumns(page.layout);
             state.charStep = pageCharStep(state.columns);

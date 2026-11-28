@@ -16,10 +16,14 @@ import os
 import json
 import shutil
 import uuid
+import asyncio
+from pathlib import Path
+from typing import Literal
+from PIL import Image, ImageOps
 from functools import lru_cache
 from database import init_db, get_db, clear_db, fail_interrupted_sources
 import ocr_engines
-from tasks import process_jiapu_source, process_uploaded_files, progress
+from tasks import ocr_page, process_jiapu_source, process_uploaded_files, progress
 import re
 from contextlib import asynccontextmanager
 import itertools
@@ -452,6 +456,7 @@ async def delete_source(
 
     if source["category"] == "Upload":
         shutil.rmtree(os.path.join(UPLOAD_DIR, f"source_{source_id}"), ignore_errors=True)
+    shutil.rmtree(Path(UPLOAD_DIR, "rotations", str(source_id)), ignore_errors=True)
 
     return await get_sources(request, topic_id=filter_topic_id)
 
@@ -1030,6 +1035,60 @@ async def get_page(page_id: int):
         "paddleocr_text": row["paddleocr_text"],
         "layout": layout,
     }
+
+def save_rotated_image(original: Path, target: Path, direction: str):
+    transpose = Image.Transpose.ROTATE_90 if direction == "left" else Image.Transpose.ROTATE_270
+    with Image.open(original) as image:
+        if getattr(image, "n_frames", 1) != 1:
+            raise HTTPException(422, "Rotation is available for single-frame pages.")
+        rotated = ImageOps.exif_transpose(image).transpose(transpose)
+        if rotated.mode == "CMYK":
+            rotated = rotated.convert("RGB")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        rotated.save(target, format="PNG")
+
+
+@app.post("/api/pages/{page_id}/rotate")
+async def rotate_page(page_id: int, direction: Literal["left", "right"], image_url: str = Form(...)):
+    page = await get_page(page_id)
+    if page["image_url"] != image_url:
+        raise HTTPException(409, "This page has changed. Reload it before rotating.")
+    original = Path(page["image_path"])
+    if not original.is_file():
+        raise HTTPException(404, "Page image is unavailable.")
+    directory = Path(UPLOAD_DIR, "rotations", str(page["source_id"]))
+    target = directory / f"{page_id}-{uuid.uuid4().hex}.png"
+    db = await get_db()
+    try:
+        try:
+            await asyncio.to_thread(save_rotated_image, original, target, direction)
+            cursor = await db.execute(
+                "UPDATE pages SET image_path=?, ocr_text=NULL, tongguocr_text=NULL, "
+                "tongguocr_layout=NULL, paddleocr_text=NULL WHERE id=? AND image_path=?",
+                (str(target), page_id, page["image_path"]),
+            )
+            if not cursor.rowcount:
+                raise HTTPException(409, "This page has changed. Reload it before rotating.")
+            await db.commit()
+        except Exception:
+            target.unlink(missing_ok=True)
+            raise
+        if original.parent == directory:
+            original.unlink(missing_ok=True)
+        try:
+            results = await ocr_page(str(target))
+        except Exception as exc:
+            print(f"OCR failed for rotated page {page_id}: {exc}")
+            return {"indexed": False}
+        await db.execute(
+            "UPDATE pages SET ocr_text=?, tongguocr_text=?, tongguocr_layout=?, paddleocr_text=? "
+            "WHERE id=? AND image_path=?", (*results, page_id, str(target)),
+        )
+        await db.commit()
+        return {"indexed": all(value is not None for value in results)}
+    finally:
+        await db.close()
+
 
 @app.post("/clear-database")
 async def clear_database(request: Request):

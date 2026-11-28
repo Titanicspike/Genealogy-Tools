@@ -101,11 +101,11 @@ def main():
         # Commit each page so the app sees progress and a stop loses nothing.
         if needs_text:
             db.execute(
-                "UPDATE pages SET tongguocr_text = ?, tongguocr_layout = ? WHERE id = ?",
-                (text, layout, page_id),
+                "UPDATE pages SET tongguocr_text = ?, tongguocr_layout = ? WHERE id = ? AND image_path = ?",
+                (text, layout, page_id, image_path),
             )
         else:
-            db.execute("UPDATE pages SET tongguocr_layout = ? WHERE id = ?", (layout, page_id))
+            db.execute("UPDATE pages SET tongguocr_layout = ? WHERE id = ? AND image_path = ?", (layout, page_id, image_path))
         db.commit()
         done += 1
 
