@@ -10,7 +10,7 @@ Search understands that Simplified and Traditional forms of a character are the 
 query, and can optionally widen further to cover characters the OCR model tends to
 confuse.
 
-Everything runs on your own machine. The OCR model is served locally; no page images
+The web app and OCR model run on your own machine. During ordinary web app use, no page images
 leave the host.
 
 ---
@@ -277,8 +277,51 @@ the fuzzy checkbox simply falls back to Simplified/Traditional matching only —
 ### 6. Run
 
 ```bash
-python -m uvicorn main:app --port 9999 --reload
+python -m uvicorn main:app --port 8000
 ```
 
-Then open <http://127.0.0.1:9999>. The database and `uploads/` directory are created
+Then open <http://127.0.0.1:8000>. The database and `uploads/` directory are created
 automatically on first start.
+
+## LLM integration (MCP)
+
+An MCP client can search the same OCR index as the web app, compare transcriptions,
+and cite a page with a clickable viewer link. Install the requirements in the project
+virtual environment and start the web app once to create the database. In Claude Code,
+open this project and enable the server registered in `.mcp.json`. For Claude Desktop,
+add this entry to `claude_desktop_config.json`, adjusting both absolute paths if the
+project moves, then restart the client.
+
+```json
+{
+  "mcpServers": {
+    "genealogy-tools": {
+      "command": "C:/path/to/Genealogy Tools/.venv/Scripts/python.exe",
+      "args": ["C:/path/to/Genealogy Tools/mcp_server.py"]
+    }
+  }
+}
+```
+
+| Tools | Use |
+|---|---|
+| `list_topics`, `list_sources`, `get_source` | Browse the collection and check per-engine OCR coverage. |
+| `search`, `search_variants` | Find ranked pages, inspect variant spellings, and follow links to scans. Use `offset` to continue a search. |
+| `get_page`, `get_source_pages` | Compare a page across engines or read up to 25 consecutive pages. Each reading is limited to 8,000 characters. |
+| `add_source`, `source_status`, `retry_source` | Queue a supported link, follow progress, or retry a failed job. |
+| `create_topic`, `set_source_topic` | Create a topic or assign a book. Pass a null topic to remove the assignment. |
+
+Library reads work while the app is offline. Job and topic management require the
+running web app, which binds to `127.0.0.1` by default and has no authentication.
+When upgrading an existing instance, restart it after all jobs finish so it loads the
+JSON endpoints.
+
+**Privacy.** Your client sends returned OCR text to whichever model it uses. A cloud
+model therefore receives those readings. Scans are opt-in and are returned only for
+an explicit image request. Configure these variables in the MCP server environment.
+
+| Variable | Default and purpose |
+|---|---|
+| `GENEALOGY_APP_URL` | `http://127.0.0.1:8000` for viewer links and app requests. |
+| `GENEALOGY_DB_PATH` | `jiapu.db` in the project root. Overrides the MCP read database. Point it at the same library as the web app when using write tools. |
+| `GENEALOGY_MCP_ALLOW_IMAGES` | Unset. Set to `1` to allow `get_page(include_image=true)` to send a resized JPEG to the client. |

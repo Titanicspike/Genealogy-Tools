@@ -11,30 +11,24 @@ from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
-import opencc
+import library
+from library import OCR_ENGINES, chunked, highlight_segments, list_topics as fetch_topics, search_variants
+from pydantic import BaseModel
 import os
 import json
 import shutil
 import uuid
 import asyncio
+from urllib.parse import urlsplit
 from pathlib import Path
 from typing import Literal
 from PIL import Image, ImageOps
-from functools import lru_cache
 from database import init_db, get_db, clear_db, fail_interrupted_sources
 import ocr_engines
 from tasks import ocr_page, process_jiapu_source, process_uploaded_files, progress
 import re
 from contextlib import asynccontextmanager
-import itertools
 
-# Initialize opencc converters
-s2t = opencc.OpenCC('s2t')
-t2s = opencc.OpenCC('t2s')
-
-SIMILAR_CHARACTERS_PATH = "similarCharacters.json"
-MAX_FUZZY_OPTIONS_PER_CHAR = 6
-MAX_FUZZY_QUERIES = 500
 UPLOAD_DIR = "uploads"
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024
 ALLOWED_UPLOAD_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".pdf"}
@@ -65,13 +59,31 @@ if os.path.exists("HunyuanOCR"):
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploaded_files")
 
+def normalize_source_url(url: str) -> str:
+    """Links copied from an address bar often lack the scheme
+    ("www.familysearch.org/ark:/..."). Assume https so the link is still
+    recognized and the scraper gets a URL it can open."""
+    url = url.strip()
+    if url and "://" not in url:
+        url = "https://" + url
+    return url
+
+
 def categorize_url(url: str) -> str:
-    if "familysearch.org" in url.lower():
-        return "FamilySearch"
-    elif "mychinaroots.com" in url.lower() or "mychinarootslibrary-com" in url.lower():
-        return "MyChinaRoots"
-    elif "ztzupu.com" in url.lower():
-        return "ZtZupu"
+    url = normalize_source_url(url)
+    try:
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower()
+    except ValueError:
+        return "Unknown"
+    if parts.scheme in ("http", "https"):
+        for domain, category in (
+            ("familysearch.org", "FamilySearch"), ("mychinaroots.com", "MyChinaRoots"),
+            ("mychinarootslibrary.com", "MyChinaRoots"),
+            ("mychinarootslibrary-com.rpa.sccl.org", "MyChinaRoots"), ("ztzupu.com", "ZtZupu"),
+        ):
+            if host == domain or host.endswith("." + domain):
+                return category
     return "Unknown"
 
 
@@ -100,91 +112,6 @@ def get_image_url(image_path: str) -> str:
 
 # Every OCR engine's page text, as (label shown in results, pages column).
 # Search matches a page if a query appears in any of them.
-OCR_ENGINES = (
-    ("HunyuanOCR", "ocr_text"),
-    ("TongGuOCR", "tongguocr_text"),
-    ("PaddleOCR-VL", "paddleocr_text"),
-)
-
-
-def chunked(iterable, size):
-    it = iter(iterable)
-    while chunk := list(itertools.islice(it, size)):
-        yield chunk
-
-
-@lru_cache(maxsize=1)
-def load_confusion_map() -> dict:
-    if not os.path.exists(SIMILAR_CHARACTERS_PATH):
-        return {}
-
-    try:
-        with open(SIMILAR_CHARACTERS_PATH, "r", encoding="utf-8") as file:
-            return json.load(file)
-    except (OSError, json.JSONDecodeError):
-        return {}
-
-
-def get_fuzzy_options(char: str, confusion_map: dict) -> list[str]:
-    options = [char]
-    predictions = confusion_map.get(char, {})
-
-    ranked_predictions = sorted(
-        predictions.items(),
-        key=lambda item: (
-            item[1].get("count", 0),
-            item[1].get("score_sum", 0) / (item[1].get("count") or 1),
-        ),
-        reverse=True,
-    )
-
-    for predicted_char, _stats in ranked_predictions:
-        if predicted_char and predicted_char not in options:
-            options.append(predicted_char)
-
-        if len(options) >= MAX_FUZZY_OPTIONS_PER_CHAR:
-            break
-
-    return options
-
-
-def expand_fuzzy_queries(query: str) -> list[str]:
-    confusion_map = load_confusion_map()
-    base_queries = [query, t2s.convert(query), s2t.convert(query)]
-    expanded_queries = []
-    seen = set()
-
-    for base_query in base_queries:
-        combinations = [""]
-
-        for char in base_query:
-            options = get_fuzzy_options(char, confusion_map)
-            next_combinations = []
-
-            for prefix in combinations:
-                for option in options:
-                    next_combinations.append(prefix + option)
-
-            combinations = next_combinations[:MAX_FUZZY_QUERIES]
-
-        for expanded_query in combinations:
-            if expanded_query and expanded_query not in seen:
-                seen.add(expanded_query)
-                expanded_queries.append(expanded_query)
-
-            if len(expanded_queries) >= MAX_FUZZY_QUERIES:
-                return expanded_queries
-
-    return expanded_queries
-
-def search_variants(query: str, fuzzy: bool) -> list[str]:
-    """Every string a search for `query` matches: Simplified and Traditional
-    forms, plus OCR look-alike variants when fuzzy. The viewer uses the same
-    list to highlight a hit, so it finds exactly what the search found."""
-    variants = expand_fuzzy_queries(query) if fuzzy else [query, t2s.convert(query), s2t.convert(query)]
-    return list(dict.fromkeys(variants))
-
-
 def parse_topic_id(topic_id: str | None) -> int | None:
     """Form selects submit "" for the All Topics option; treat that as unassigned."""
     if topic_id is None or not str(topic_id).strip():
@@ -193,18 +120,6 @@ def parse_topic_id(topic_id: str | None) -> int | None:
         return int(topic_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid topic.")
-
-
-async def fetch_topics(db):
-    """Topics with a source count, newest activity first."""
-    cursor = await db.execute("""
-        SELECT t.id, t.name, t.created_at, COUNT(s.id) AS source_count
-        FROM topics t
-        LEFT JOIN sources s ON s.topic_id = t.id
-        GROUP BY t.id
-        ORDER BY t.name COLLATE NOCASE ASC
-    """)
-    return await cursor.fetchall()
 
 
 async def assert_topic_exists(db, topic_id: int | None):
@@ -245,59 +160,8 @@ def progress_view(source: dict) -> dict | None:
     }
 
 
-SOURCE_SORTS = {
-    "newest": "s.created_at DESC",
-    "oldest": "s.created_at ASC",
-    "title": "COALESCE(s.title, s.url) COLLATE NOCASE ASC",
-    "pages": "page_count DESC",
-}
-
-
-async def fetch_sources(
-    db,
-    topic_id: int | None = None,
-    status: str = "",
-    category: str = "",
-    text: str = "",
-    sort: str = "newest",
-) -> list[dict]:
-    """Sources with their topic, page counts per OCR engine and live progress.
-
-    status is "active" (anything still running), "Completed", "Failed" or ""
-    for all; text matches the title or URL.
-    """
-    query = """
-        SELECT s.*, t.name AS topic_name,
-               COUNT(p.id) AS page_count,
-               COUNT(p.ocr_text) AS hunyuan_count,
-               COUNT(p.tongguocr_text) AS tongguocr_count,
-               COUNT(p.paddleocr_text) AS paddleocr_count,
-               MIN(p.id) AS first_page_id
-        FROM sources s
-        LEFT JOIN topics t ON s.topic_id = t.id
-        LEFT JOIN pages p ON p.source_id = s.id
-    """
-    where, params = [], []
-    if topic_id is not None:
-        where.append("s.topic_id = ?")
-        params.append(topic_id)
-    if status == "active":
-        where.append("s.status NOT IN ('Completed', 'Failed')")
-    elif status:
-        where.append("s.status = ?")
-        params.append(status)
-    if category:
-        where.append("s.category = ?")
-        params.append(category)
-    if text.strip():
-        where.append("(s.title LIKE ? OR s.url LIKE ?)")
-        params += [f"%{text.strip()}%"] * 2
-    if where:
-        query += " WHERE " + " AND ".join(where)
-    query += " GROUP BY s.id ORDER BY " + SOURCE_SORTS.get(sort, SOURCE_SORTS["newest"])
-
-    cursor = await db.execute(query, params)
-    sources = [dict(row) for row in await cursor.fetchall()]
+async def fetch_sources(db, topic_id=None, status="", category="", text="", sort="newest"):
+    sources = await library.list_sources(db, topic_id, status, category, text, sort)
 
     # The first page's image, for a thumbnail on the sources page.
     first_ids = [source["first_page_id"] for source in sources if source["first_page_id"]]
@@ -334,23 +198,44 @@ async def read_root(request: Request):
     )
 
 
-@app.post("/topics", response_class=HTMLResponse)
-async def create_topic(request: Request, name: str = Form(...)):
-    topic_name = name.strip()
-    if not topic_name:
-        raise HTTPException(status_code=400, detail="Topic name cannot be empty.")
+class TopicInput(BaseModel):
+    name: str
 
+
+class TopicAssignment(BaseModel):
+    topic_id: int | None
+
+
+class SourceInput(BaseModel):
+    url: str
+    topic_id: int | None = None
+
+
+async def save_topic(db, name):
+    name = name.strip()
+    if not name:
+        raise HTTPException(400, "Topic name cannot be empty.")
+    await db.execute("INSERT INTO topics(name) VALUES (?) ON CONFLICT(name) DO NOTHING", (name,))
+    rows = await db.execute_fetchall("SELECT id, name FROM topics WHERE name=? COLLATE NOCASE", (name,))
+    await db.commit()
+    return dict(rows[0])
+
+
+@app.post("/api/topics")
+async def api_create_topic(body: TopicInput):
     db = await get_db()
     try:
-        cursor = await db.execute("SELECT id FROM topics WHERE name = ? COLLATE NOCASE", (topic_name,))
-        existing = await cursor.fetchone()
-        if existing:
-            topic_id = existing["id"]
-        else:
-            cursor = await db.execute("INSERT INTO topics (name) VALUES (?)", (topic_name,))
-            await db.commit()
-            topic_id = cursor.lastrowid
+        return await save_topic(db, body.name)
+    finally:
+        await db.close()
 
+
+@app.post("/topics", response_class=HTMLResponse)
+async def create_topic(request: Request, name: str = Form(...)):
+    db = await get_db()
+    try:
+        topic = await save_topic(db, name)
+        topic_id = topic["id"]
         topics = await fetch_topics(db)
     finally:
         await db.close()
@@ -412,7 +297,16 @@ async def set_source_topic(
     filter_topic_id is the topic the list is currently filtered by, so the
     re-rendered list keeps that filter instead of falling back to all topics.
     """
-    new_topic_id = parse_topic_id(topic_id)
+    await assign_topic(source_id, parse_topic_id(topic_id))
+    return await get_sources(request, topic_id=filter_topic_id)
+
+
+@app.post("/api/sources/{source_id}/topic")
+async def api_assign_topic(source_id: int, body: TopicAssignment):
+    return await assign_topic(source_id, body.topic_id)
+
+
+async def assign_topic(source_id, new_topic_id):
     db = await get_db()
     try:
         cursor = await db.execute("SELECT id FROM sources WHERE id = ?", (source_id,))
@@ -425,7 +319,7 @@ async def set_source_topic(
     finally:
         await db.close()
 
-    return await get_sources(request, topic_id=filter_topic_id)
+    return {"id": source_id, "topic_id": new_topic_id}
 
 
 @app.post("/sources/{source_id}/delete", response_class=HTMLResponse)
@@ -475,8 +369,15 @@ async def retry_source(
     the original files still sitting in uploads/source_<id>/; scrapes just re-run
     against the stored URL.
     """
+    await queue_retry(source_id, background_tasks)
+    return await get_sources(request, topic_id=filter_topic_id)
+
+
+@app.post("/api/sources/{source_id}/retry")
+async def queue_retry(source_id: int, background_tasks: BackgroundTasks):
     db = await get_db()
     try:
+        await db.execute("BEGIN IMMEDIATE")
         cursor = await db.execute(
             "SELECT url, category, status FROM sources WHERE id = ?", (source_id,)
         )
@@ -514,7 +415,28 @@ async def retry_source(
             process_jiapu_source, source_id, source["url"], source["category"]
         )
 
-    return await get_sources(request, topic_id=filter_topic_id)
+    return {"id": source_id, "status": "Pending"}
+
+
+@app.get("/api/sources/{source_id}")
+async def api_source_status(source_id: int):
+    db = await get_db()
+    try:
+        source = await library.get_source(db, source_id)
+        if source is None:
+            raise HTTPException(404, "Source not found")
+        return dict(source, progress=progress.get(source_id))
+    finally:
+        await db.close()
+
+
+@app.post("/api/sources")
+async def api_add_source(body: SourceInput, background_tasks: BackgroundTasks):
+    url = normalize_source_url(body.url)
+    category = categorize_url(url)
+    if category == "Unknown":
+        raise HTTPException(400, "Unsupported source website.")
+    return await queue_source(url, category, body.topic_id, background_tasks)
 
 
 @app.post("/add-source", response_class=HTMLResponse)
@@ -524,9 +446,12 @@ async def add_source(
     url: str = Form(...),
     topic_id: str = Form(None),
 ):
-    category = categorize_url(url)
-    selected_topic_id = parse_topic_id(topic_id)
+    url = normalize_source_url(url)
+    await queue_source(url, categorize_url(url), parse_topic_id(topic_id), background_tasks)
+    return await get_sources(request, topic_id=topic_id)
 
+
+async def queue_source(url, category, selected_topic_id, background_tasks):
     db = await get_db()
     try:
         await assert_topic_exists(db, selected_topic_id)
@@ -543,9 +468,7 @@ async def add_source(
     finally:
         await db.close()
 
-    # After adding, we just want to return the updated list of sources.
-    # We can fetch them and render the partial.
-    return await get_sources(request, topic_id=topic_id)
+    return {"id": source_id, "category": category, "status": "Pending"}
 
 
 @app.post("/upload-ocr", response_class=HTMLResponse)
@@ -729,42 +652,6 @@ async def get_source_text(source_id: int, download: bool = False):
 
     return PlainTextResponse(text, headers=headers)
 
-SNIPPET_CONTEXT = 70
-
-
-def highlight_segments(text: str, pattern: "re.Pattern | None", snippet: bool) -> list[tuple[str, bool]]:
-    """Split text into (piece, is_hit) parts for the template to mark up.
-
-    With snippet, only the text around the first hit is kept, with ellipses.
-    Returning parts rather than HTML leaves escaping to the template.
-    """
-    text = text or ""
-    matches = list(pattern.finditer(text)) if pattern else []
-    start, end = 0, len(text)
-    if snippet and matches:
-        start = max(0, matches[0].start() - SNIPPET_CONTEXT)
-        end = min(len(text), matches[0].end() + SNIPPET_CONTEXT * 2)
-    elif snippet:
-        end = min(len(text), SNIPPET_CONTEXT * 3)
-
-    parts, position = [], start
-    if start > 0:
-        parts.append(("…", False))
-    for match in matches:
-        if match.end() <= start or match.start() >= end:
-            continue
-        hit_start, hit_end = max(match.start(), start), min(match.end(), end)
-        if hit_start > position:
-            parts.append((text[position:hit_start], False))
-        parts.append((text[hit_start:hit_end], True))
-        position = hit_end
-    if position < end:
-        parts.append((text[position:end], False))
-    if end < len(text):
-        parts.append(("…", False))
-    return parts
-
-
 async def add_page_details(results: list[dict], variants: list[str]):
     """Add what the search page shows beyond the home page's results: each
     hit's page number within its source, the source's page count, an image
@@ -775,24 +662,14 @@ async def add_page_details(results: list[dict], variants: list[str]):
         # Longest first, so a longer variant wins over a shorter one it contains.
         pattern = re.compile("|".join(re.escape(v) for v in alternatives))
 
-    source_ids = list({r["source_id"] for r in results})
-    page_numbers, page_totals = {}, {}
     db = await get_db()
     try:
-        for batch in chunked(source_ids, 900):
-            cursor = await db.execute(
-                f"SELECT id, source_id FROM pages WHERE source_id IN ({','.join('?' * len(batch))}) ORDER BY id",
-                batch,
-            )
-            for row in await cursor.fetchall():
-                page_totals[row["source_id"]] = page_totals.get(row["source_id"], 0) + 1
-                page_numbers[row["id"]] = page_totals[row["source_id"]]
+        positions = await library.page_positions(db, (row["source_id"] for row in results))
     finally:
         await db.close()
 
     for result in results:
-        result["page_number"] = page_numbers.get(result["id"])
-        result["page_total"] = page_totals.get(result["source_id"])
+        result["page_number"], result["page_total"] = positions.get(result["id"], (None, None))
         result["image_url"] = get_image_url(result["image_path"])
         for match in result["matches"]:
             match["snippet"] = highlight_segments(match["text"], pattern, snippet=True)
@@ -841,8 +718,6 @@ async def search(
     selected_topic_id = parse_topic_id(topic_id)
     full = layout == "full"
     results_template = "partials/search_results_full.html" if full else "partials/search_results.html"
-    engines = [e for e in OCR_ENGINES if e[0] == engine] or list(OCR_ENGINES)
-
     topic_name = None
     if selected_topic_id is not None:
         db = await get_db()
@@ -862,73 +737,11 @@ async def search(
             context={"request": request, "results": [], "fuzzy": fuzzy, "topic_name": topic_name},
         )
 
-    search_queries = search_variants(query, fuzzy)
-
-    # SQLite's default limit is 999 bound params; stay comfortably under that per statement.
-    # Each variant binds once per OCR engine; the topic and site filters take two more.
-    BATCH_SIZE = 900 // len(engines) - 2
-
     db = await get_db()
     try:
-        rows_by_id = {}
-        match_counts = {}
-
-        for batch in chunked(search_queries, BATCH_SIZE):
-            # A page matches if any variant appears in any engine's text.
-            one_variant = "(" + " OR ".join(f"p.{column} LIKE ?" for _, column in engines) + ")"
-            like_clauses = " OR ".join([one_variant] * len(batch))
-            params = [f"%{q}%" for q in batch for _ in engines]
-
-            topic_clause = ""
-            if selected_topic_id is not None:
-                topic_clause = " AND s.topic_id = ?"
-                params.append(selected_topic_id)
-            if category:
-                topic_clause += " AND s.category = ?"
-                params.append(category)
-
-            cursor = await db.execute(f"""
-                SELECT p.id, p.source_id, p.ocr_text, p.tongguocr_text, p.paddleocr_text, p.image_path,
-                       s.url, s.category, s.title AS source_title, t.name AS topic_name
-                FROM pages p
-                JOIN sources s ON p.source_id = s.id
-                LEFT JOIN topics t ON s.topic_id = t.id
-                WHERE ({like_clauses}){topic_clause}
-            """, params)
-            batch_rows = await cursor.fetchall()
-
-            for row in batch_rows:
-                page = rows_by_id.setdefault(row["id"], {**dict(row), "engines": set()})
-                for q in batch:
-                    hit = False
-                    for engine_name, column in engines:
-                        if q in (page[column] or ""):
-                            page["engines"].add(engine_name)
-                            hit = True
-                    if hit:
-                        match_counts[page["id"]] = match_counts.get(page["id"], 0) + 1
+        results, search_queries = await library.search_pages(db, query, fuzzy, selected_topic_id, category, engine)
     finally:
         await db.close()
-
-    for page in rows_by_id.values():
-        # Show the text from each engine that matched, in OCR_ENGINES order.
-        page["matches"] = [
-            {"engine": engine_name, "text": page[column]}
-            for engine_name, column in engines
-            if engine_name in page["engines"]
-        ] or [
-            # LIKE is case-insensitive for Latin letters but `in` is not, so a
-            # page can match in SQL with no engine recorded; show it anyway.
-            {"engine": engine_name, "text": page[column]}
-            for engine_name, column in engines
-            if page[column]
-        ][:1]
-
-    def sort_key(row):
-        exact_match = any(query in (row[column] or "") for _, column in engines)
-        return (not exact_match, -match_counts.get(row["id"], 0))
-
-    results = sorted(rows_by_id.values(), key=sort_key)
 
     if full:
         await add_page_details(results, search_queries)
