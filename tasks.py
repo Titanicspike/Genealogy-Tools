@@ -7,6 +7,7 @@ import requests
 import base64
 import re
 import fitz
+from PIL import Image
 from HunyuanOCR.HunyuanOCR import extractText
 from TongGuOCR import TongGuOCR
 from PaddleOCRVL import PaddleOCRVL
@@ -118,6 +119,20 @@ async def ocr_page(image_path: str) -> tuple:
     return ocr_text, tongguocr_text, tongguocr_layout, paddleocr_text
 
 
+def is_image_file(path: str) -> bool:
+    """Whether path holds a real image; Pillow only reads its header.
+
+    Blocked ZtZupu pages are HTML error pages under a .jpg name (scrapes from
+    before the scraper skipped them left these on disk), and the OCR engines
+    fail the whole source on them.
+    """
+    try:
+        with Image.open(path):
+            return True
+    except Exception:
+        return False
+
+
 async def save_page(source_id: int, image_path: str, ocr_results: tuple):
     # Open a fresh connection for each image to avoid long locks
     db = await get_db()
@@ -141,7 +156,8 @@ async def ocr_pages(source_id: int, image_paths: "list[str] | asyncio.Queue"):
 
     The viewer and text export order pages by row id, so a page that finishes
     early waits for the pages before it to be saved first. If a page fails, the
-    pages still being read are abandoned and the error fails the source.
+    pages still being read are abandoned and the error fails the source. A file
+    that isn't a readable image (such as a blocked ZtZupu page) is skipped.
     """
     if isinstance(image_paths, asyncio.Queue):
         incoming = image_paths
@@ -184,9 +200,12 @@ async def ocr_pages(source_id: int, image_paths: "list[str] | asyncio.Queue"):
             if key in seen:
                 continue
             seen.add(key)
-            update_progress(source_id, ocr_total=len(seen))
+            if not is_image_file(image_path):
+                print(f"Skipping {image_path}: not a readable image (blocked page?)")
+                continue
             page_read = asyncio.create_task(read(image_path))
             reads.append(page_read)
+            update_progress(source_id, ocr_total=len(reads))
             in_order.put_nowait((image_path, page_read))
         in_order.put_nowait(None)
         await saver

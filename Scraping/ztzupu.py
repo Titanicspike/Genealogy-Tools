@@ -4,6 +4,8 @@ import os
 import sys
 import asyncio
 import random
+from io import BytesIO
+from PIL import Image
 from bs4 import BeautifulSoup
 from Scraping.FolderNameSerializer import SerializeFolderName
 from Scraping.paths import ZTZUPU_DIR, book_dir
@@ -29,6 +31,19 @@ class DownloadError(Exception):
     pass
 
 
+def is_image(data: bytes) -> bool:
+    """Whether data is a real image (Pillow can read its header).
+
+    ZtZupu serves blocked pages as a "404 - 找不到文件或目录" HTML page with a
+    200 status and an image/jpeg Content-Type, so only the body tells them apart.
+    """
+    try:
+        with Image.open(BytesIO(data)):
+            return True
+    except Exception:
+        return False
+
+
 def backoff_seconds(attempt: int, retry_after: str | None = None) -> float:
     """Exponential backoff with jitter, honouring a numeric Retry-After header."""
     if retry_after and retry_after.strip().isdigit():
@@ -40,8 +55,10 @@ def backoff_seconds(attempt: int, retry_after: str | None = None) -> float:
 async def getImage(session, slots, url, num, saveDir, on_saved=None):
     """Download one page image, retrying transient failures with backoff.
 
-    Raises DownloadError when the page can't be fetched, so the source fails
-    instead of finishing with pages missing or error pages saved as images.
+    Returns True once saved, or False for a page the site has blocked, which
+    is not saved (and any copy left from an earlier run is removed, so OCR
+    doesn't pick it up). Raises DownloadError when the page can't be fetched,
+    so the source fails instead of finishing with pages missing.
     """
     path = os.path.join(saveDir, f'{num}.{url.split(".")[-1]}')
     last_error = None
@@ -57,12 +74,17 @@ async def getImage(session, slots, url, num, saveDir, on_saved=None):
                     if content_type.startswith("text/html"):
                         raise DownloadError(f"{url} returned an HTML page, not an image")
                     body = await response.read()
+                    if not is_image(body):
+                        print(f"Page {num} ({url}) is blocked; skipping it")
+                        if os.path.exists(path):
+                            os.remove(path)
+                        return False
                     with open(path, 'wb') as f:
                         f.write(body)
                     print("Saved image to: " + path)
                     if on_saved:
                         on_saved()
-                    return
+                    return True
                 last_error = f"HTTP {response.status}"
                 if response.status not in RETRYABLE_STATUSES:
                     raise DownloadError(f"{url} returned {last_error}")
@@ -75,18 +97,38 @@ async def getImage(session, slots, url, num, saveDir, on_saved=None):
             await asyncio.sleep(delay)
     raise DownloadError(f"{url} failed after {MAX_ATTEMPTS} attempts ({last_error})")
 
-async def imageManager(imageUrls, saveDir, on_saved=None):
+async def imageManager(imageUrls, saveDir, on_saved=None, on_total=None):
+    """Download every page; returns how many were blocked and skipped.
+
+    Each blocked page lowers the total reported through on_total, so progress
+    counts only pages that can actually be downloaded.
+    """
     slots = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
+    total = len(imageUrls)
+    blocked = 0
+
+    async def fetch(url, num):
+        nonlocal blocked
+        saved = await getImage(session, slots, url, num, saveDir, on_saved)
+        if not saved:
+            blocked += 1
+            if on_total:
+                on_total(total - blocked)
+        return saved
+
     async with aiohttp.ClientSession() as session:
         results = await asyncio.gather(
-            *[getImage(session, slots, url, n, saveDir, on_saved) for n, url in enumerate(imageUrls)],
+            *[fetch(url, n) for n, url in enumerate(imageUrls)],
             return_exceptions=True,
         )
     failures = [r for r in results if isinstance(r, BaseException)]
     if failures:
         raise DownloadError(
-            f"{len(failures)} of {len(imageUrls)} pages failed to download; first: {failures[0]}"
+            f"{len(failures)} of {total} pages failed to download; first: {failures[0]}"
         )
+    if total and blocked == total:
+        raise DownloadError(f"All {total} pages are blocked by the site")
+    return blocked
 
 def main(zupuIds, savePath = ZTZUPU_DIR, on_total=None, on_saved=None):
     """Scrape each book id in zupuIds; returns the directory saved for each.
@@ -110,7 +152,11 @@ def main(zupuIds, savePath = ZTZUPU_DIR, on_total=None, on_saved=None):
         fullSavePath = book_dir(savePath, name)
         if on_total:
             on_total(len(imageUrls))
-        asyncio.run(imageManager(imageUrls, fullSavePath, on_saved), loop_factory=LOOP_FACTORY)
+        blocked = asyncio.run(
+            imageManager(imageUrls, fullSavePath, on_saved, on_total), loop_factory=LOOP_FACTORY
+        )
+        skipped = f", skipped {blocked} blocked" if blocked else ""
+        print(f"Finished scraping {name}{skipped}")
         saved_dirs.append(fullSavePath)
     return saved_dirs
 
